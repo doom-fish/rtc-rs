@@ -1,0 +1,69 @@
+[package]
+name = "rtc-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.76"
+license = "MIT OR Apache-2.0"
+description = "Pure-Rust PeerConnection-equivalent WebRTC orchestration for native macOS meeting clients, layered on the doomfish media stack (sdp/ice/dtls/srtp/rtp/opus)"
+authors = ["Per Johansson <per@doom.fish>"]
+homepage = "https://github.com/doom-fish/rtc-rs"
+repository = "https://github.com/doom-fish/rtc-rs"
+keywords = ["webrtc", "peerconnection", "rtp", "dtls-srtp", "ice"]
+categories = ["network-programming", "multimedia"]
+readme = "README.md"
+build = "build.rs"
+publish = false
+
+[lib]
+name = "rtc"
+path = "src/lib.rs"
+crate-type = ["lib"]
+
+[features]
+default = []
+# Opt-in native macOS capture/encode/decode sources. Off by default so the
+# core orchestration stack builds and the loopback test runs on any host
+# without camera/microphone/VideoToolbox hardware. See COVERAGE.md.
+apple-media = [
+    "dep:avcapture",
+    "dep:audiounit",
+    "dep:videotoolbox",
+    "dep:audiotoolbox",
+    "dep:apple-metal",
+    "dep:coreanimation",
+]
+
+[dependencies]
+libc = "0.2"
+
+sdp = { path = "../sdp-rs", package = "sdp-rs", version = ">=0.1.0, <0.2" }
+ice = { path = "../ice-rs", package = "ice-rs", version = ">=0.1.0, <0.2" }
+dtls = { path = "../dtls-rs", package = "dtls-rs", version = ">=0.1.0, <0.2" }
+srtp = { path = "../srtp-rs", package = "srtp-rs", version = ">=0.1.0, <0.2" }
+rtp = { path = "../rtp-rs", package = "rtp-rs", version = ">=0.1.0, <0.2" }
+opus = { path = "../opus-rs", package = "opus-rs", version = ">=0.1.0, <0.2" }
+stun = { path = "../stun-rs", package = "stun-rs", version = ">=0.1.0, <0.2" }
+turn = { path = "../turn-rs", package = "turn-rs", version = ">=0.1.0, <0.2" }
+
+# Native media plane (optional, behind the `apple-media` feature).
+avcapture = { path = "../avcapture-rs", package = "avcapture", optional = true }
+audiounit = { path = "../audiounit-rs", package = "audiounit", optional = true }
+videotoolbox = { path = "../videotoolbox-rs", package = "videotoolbox", optional = true }
+audiotoolbox = { path = "../audiotoolbox-rs", package = "audiotoolbox", optional = true }
+apple-metal = { path = "../apple-metal-rs", package = "apple-metal", optional = true }
+coreanimation = { path = "../coreanimation-rs", package = "coreanimation-rs", optional = true }
+
+[[example]]
+name = "01_offer_answer_local"
+path = "examples/01_offer_answer_local.rs"
+
+[[example]]
+name = "02_loopback"
+path = "examples/02_loopback.rs"
+
+[[example]]
+name = "03_silence_call"
+path = "examples/03_silence_call.rs"
+
+[dev-dependencies]
+rtp = { path = "../rtp-rs", package = "rtp-rs" }
