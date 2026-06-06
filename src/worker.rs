@@ -493,13 +493,19 @@ fn handle_rtp(
         let _ = evt_tx.try_send(Event::TrackAdded(kind, ssrc));
     }
 
-    let entry = receivers.entry(ssrc).or_insert_with(|| match kind {
-        TrackKind::Audio => Receiver_::Audio(
-            AudioReceiver::new(&MediaConfig::opus_default(), ssrc)
-                .expect("opus decoder init"),
-        ),
-        TrackKind::Video => Receiver_::Video(VideoReceiver::new(ssrc)),
-    });
+    if !receivers.contains_key(&ssrc) {
+        // A remote SSRC can mint a receiver here; never let a decoder-init
+        // failure panic the worker thread — drop the packet instead.
+        let receiver = match kind {
+            TrackKind::Audio => match AudioReceiver::new(&MediaConfig::opus_default(), ssrc) {
+                Ok(a) => Receiver_::Audio(a),
+                Err(_) => return,
+            },
+            TrackKind::Video => Receiver_::Video(VideoReceiver::new(ssrc)),
+        };
+        receivers.insert(ssrc, receiver);
+    }
+    let entry = receivers.get_mut(&ssrc).expect("just inserted");
     match entry {
         Receiver_::Audio(a) => a.push(seq, wire),
         Receiver_::Video(v) => v.push(seq, wire),
