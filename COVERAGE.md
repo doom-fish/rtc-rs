@@ -20,7 +20,7 @@ implemented and exercised by a test named in the last table.
 | Trickle ICE | ✅ | `add_remote_candidate[_immediate]`, `add_remote_end_of_candidates`, `Event::LocalCandidate`, `Event::IceGatheringComplete`; SDP-inlined candidates are used |
 | mDNS candidates | ⚠️ policy | `RtcConfig::mdns`; rejected by default |
 | ICE restart / renegotiation | ❌ deferred | A second offer or answer returns `InvalidState` |
-| DTLS roles | ⚠️ partial | The answerer honours the offer's `a=setup` and `answer_dtls_role` for `actpass`. The offerer is always the DTLS server: a `passive` answer is refused with `Unsupported` because the certificate is bound to the server role when the offer is created. |
+| DTLS roles | ✅ | The offerer creates its certificate with the offer and becomes the DTLS server for an `active` answer or the client for a `passive` one; `actpass`, `holdconn` or no `a=setup` in an answer is refused. The answerer honours the offer's `a=setup` and `answer_dtls_role` for `actpass`. |
 | Fingerprint pinning | ✅ | The single SHA-256 remote fingerprint is pinned in the DTLS configuration, so a mismatch fails the handshake |
 | Key export + SRTP keying | ✅ | RFC 5764 §4.2 split, `EXTRACTOR-dtls_srtp` |
 | Failure reporting | ✅ | DTLS errors, a handshake timeout, ICE failure and consent expiry give `Event::Failed`, `ConnectionState::Failed`, and stop the worker |
@@ -77,8 +77,8 @@ on any host without camera, microphone, or hardware-codec access.
 | `audio_round_trip` | Opus encode → RTP → decode yields PCM |
 | `video_round_trip` | H.264 access unit spanning multiple packets reassembles |
 | `twcc_seq_stamping` | Shared counter stamps consecutive transport sequences |
-| `loopback_full_stack` | **Gating:** two peers complete SDP+ICE+DTLS+SRTP in both offer/answer directions and exchange Opus audio + H.264 video with RTT and bitrate statistics |
-| `dtls_roles` | rtc-rs as DTLS server against a scripted DTLS-client peer (passive preference and `a=setup:active` offers) with audio both ways under non-default payload type, MID and extension ids; passive, `actpass` and `holdconn` answers refused |
+| `loopback_full_stack` | **Gating:** two peers complete SDP+ICE+DTLS+SRTP in both offer/answer directions and after a passive answer (offerer as DTLS client), exchanging Opus audio + H.264 video with RTT and bitrate statistics |
+| `dtls_roles` | rtc-rs as DTLS server against a scripted DTLS-client peer (passive preference and `a=setup:active` offers) with audio both ways under non-default payload type, MID and extension ids; the offerer takes the client role for a passive answer; `actpass` and `holdconn` answers refused |
 | `failure_states` | Fingerprint mismatch on the server and on the client side, a stalled DTLS handshake, and consent expiry with an injected clock all reach `Failed`; media stops after consent expiry |
 | `turn_relay` | A relay-only call through an in-process TURN server carries audio both ways |
 | unit tests | CSPRNG credentials, spoofed-SSRC floods (no contexts), bounded eviction, per-SSRC SRTCP, TWCC wrap, reordering and delta reconstruction, NACK gap bounds, feedback parsing, event-queue drop policy |

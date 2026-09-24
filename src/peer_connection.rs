@@ -61,7 +61,7 @@ pub struct PeerConnection {
     video_source: Option<Arc<dyn VideoSource>>,
     // Set when our DTLS identity is committed (offerer: at create_offer;
     // answerer: at set_remote_description(Offer)).
-    dtls: Option<dtls::Connection>,
+    certificate: Option<dtls::Certificate>,
     dtls_role: Option<DtlsRole>,
     identity: Option<LocalSdpIdentity>,
     // Answerer keeps the remote offer until create_answer.
@@ -106,7 +106,7 @@ impl PeerConnection {
             local_video_ssrc,
             audio_source: None,
             video_source: None,
-            dtls: None,
+            certificate: None,
             dtls_role: None,
             identity: None,
             pending_offer: None,
@@ -134,11 +134,7 @@ impl PeerConnection {
     #[allow(missing_docs)]
     #[must_use]
     pub fn dtls_role(&self) -> Option<DtlsRole> {
-        if self.role == Role::Offerer && self.worker.is_none() {
-            None
-        } else {
-            self.dtls_role
-        }
+        self.dtls_role
     }
 
     /// Attach an outbound audio source. Call before negotiation, or any time —
@@ -176,8 +172,8 @@ impl PeerConnection {
         }
     }
 
-    /// Create a local offer. Commits our DTLS identity as the **server**
-    /// (the answerer will choose `setup:active`).
+    /// Create a local offer. Commits our DTLS identity; the answer's
+    /// `a=setup` picks our DTLS role.
     pub fn create_offer(&mut self) -> Result<Offer> {
         if self.worker.is_some() {
             return Err(RtcError::InvalidState("renegotiation is not supported"));
@@ -187,18 +183,18 @@ impl PeerConnection {
                 "cannot create an offer after receiving one",
             ));
         }
-        let dtls = new_connection(DtlsRole::Server, None)?;
+        let certificate = dtls::Certificate::generate()?;
         let identity = LocalSdpIdentity {
             ice_ufrag: self.ice_ufrag.clone(),
             ice_pwd: self.ice_pwd.clone(),
-            fingerprint_sha256: dtls.local_fingerprint(),
+            fingerprint_sha256: certificate.fingerprint(),
         };
         let ssrcs = OfferSsrcs {
             audio: self.local_audio_ssrc,
             video: self.local_video_ssrc,
         };
         let offer = build_offer(&self.config, &identity, ssrcs, random_u64()?);
-        self.dtls = Some(dtls);
+        self.certificate = Some(certificate);
         self.identity = Some(identity);
         self.role = Role::Offerer;
         self.signaling = SignalingState::HaveLocalOffer;
@@ -241,11 +237,7 @@ impl PeerConnection {
             .pending_remote
             .take()
             .ok_or(RtcError::InvalidState("no remote params"))?;
-        let dtls = self
-            .dtls
-            .take()
-            .ok_or(RtcError::InvalidState("no dtls connection"))?;
-        self.start_worker(false, remote, negotiated, dtls)?;
+        self.start_worker(false, role, remote, negotiated)?;
         self.pending_offer = None;
         self.signaling = SignalingState::Stable;
         Ok(answer)
@@ -265,14 +257,14 @@ impl PeerConnection {
                 }
                 let remote = apply_remote(offer.sdp())?;
                 let role = dtls_role_for_offer(remote.setup, self.config.answer_dtls_role)?;
-                let dtls = new_connection(role, Some(remote.fingerprint_sha256))?;
+                let certificate = dtls::Certificate::generate()?;
                 self.identity = Some(LocalSdpIdentity {
                     ice_ufrag: self.ice_ufrag.clone(),
                     ice_pwd: self.ice_pwd.clone(),
-                    fingerprint_sha256: dtls.local_fingerprint(),
+                    fingerprint_sha256: certificate.fingerprint(),
                 });
                 self.buffer_inline_candidates(&remote);
-                self.dtls = Some(dtls);
+                self.certificate = Some(certificate);
                 self.dtls_role = Some(role);
                 self.pending_offer = Some(offer);
                 self.pending_remote = Some(remote);
@@ -292,14 +284,8 @@ impl PeerConnection {
                     self.config.audio.as_ref(),
                     self.config.video.as_ref(),
                 );
-                let mut dtls = self
-                    .dtls
-                    .take()
-                    .ok_or(RtcError::InvalidState("no dtls connection"))?;
-                dtls.set_expected_peer_fingerprint(remote.fingerprint_sha256)?;
                 self.buffer_inline_candidates(&remote);
-                self.dtls_role = Some(role);
-                self.start_worker(true, remote, negotiated, dtls)?;
+                self.start_worker(true, role, remote, negotiated)?;
                 self.signaling = SignalingState::Stable;
                 Ok(())
             }
@@ -399,13 +385,15 @@ impl PeerConnection {
     fn start_worker(
         &mut self,
         controlling: bool,
+        dtls_role: DtlsRole,
         mut remote: RemoteParams,
         negotiated: Negotiated,
-        dtls: dtls::Connection,
     ) -> Result<()> {
-        let dtls_role = self
-            .dtls_role
-            .ok_or(RtcError::InvalidState("no DTLS role"))?;
+        let certificate = self
+            .certificate
+            .clone()
+            .ok_or(RtcError::InvalidState("no local certificate"))?;
+        let dtls = new_connection(dtls_role, certificate, remote.fingerprint_sha256)?;
         remote.end_of_candidates |= self.pending_end_of_candidates;
         let init = WorkerInit {
             config: self.config.clone(),
@@ -430,6 +418,7 @@ impl PeerConnection {
             .name("rtc-worker".into())
             .spawn(move || worker::run(init, commands))
             .map_err(RtcError::from)?;
+        self.dtls_role = Some(dtls_role);
         self.worker = Some(WorkerHandle { join, cmd });
         Ok(())
     }

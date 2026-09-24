@@ -107,8 +107,8 @@ cargo run --example 02_loopback
 ## Security model
 
 - **Peer identity.** The remote SDP's single SHA-256 `a=fingerprint` is pinned
-  in the DTLS configuration (the answerer when it applies the offer, the
-  offerer when it applies the answer), so a certificate that does not match
+  in the DTLS configuration, which each side creates once the remote
+  description is known, so a certificate that does not match
   fails the handshake itself with `RtcError::FingerprintMismatch`. Several
   distinct SHA-256 fingerprints are refused, and bundled media sections must
   agree on their ICE and DTLS parameters.
@@ -133,14 +133,14 @@ cargo run --example 02_loopback
 
 ## DTLS roles
 
-The offerer offers `a=setup:actpass` and commits its certificate to the DTLS
-server role when it creates the offer, so the answer must choose
-`a=setup:active`. An answer with `a=setup:passive` is refused with
-`RtcError::Unsupported`, and one with `actpass`, `holdconn` or no `a=setup` with
-`RtcError::Negotiation`, instead of both sides waiting as servers. The answerer
-honours the offer's `a=setup` (`active` makes it the server, `passive` the
-client) and uses `RtcConfig::answer_dtls_role` (client by default) for
-`actpass`.
+The offerer creates its DTLS certificate with the offer and offers
+`a=setup:actpass`; the DTLS connection is created when the answer arrives. An
+answer with `a=setup:active` makes the offerer the DTLS server and one with
+`a=setup:passive` the client. An answer with `actpass` (which RFC 5763 reserves
+for offers), `holdconn` or no `a=setup` is refused with
+`RtcError::Negotiation`. The answerer honours the offer's `a=setup` (`active`
+makes it the server, `passive` the client) and uses
+`RtcConfig::answer_dtls_role` (client by default) for `actpass`.
 
 ## ICE
 
@@ -192,7 +192,8 @@ cargo test
 The gating integration test is `tests/loopback_full_stack.rs`: two in-process
 `PeerConnection`s complete the entire SDP + ICE + DTLS + SRTP negotiation and
 exchange Opus audio and H.264 video, asserting both directions receive both
-media types. Other suites drive rtc-rs as the DTLS server against a scripted
+media types, with the offerer as DTLS server and, after a passive answer, as
+DTLS client. Other suites drive rtc-rs as the DTLS server against a scripted
 peer built from the sibling crates, fingerprint mismatches on both sides, a
 stalled handshake, consent expiry with an injected clock, and a relay-only
 call through an in-process TURN server. Every socket binds `127.0.0.1`.

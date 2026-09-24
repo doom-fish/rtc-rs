@@ -54,12 +54,10 @@ pub fn dtls_role_for_offer(remote: Option<SetupRole>, preference: DtlsRole) -> R
 pub fn dtls_role_for_answer(remote: Option<SetupRole>) -> Result<DtlsRole> {
     match remote {
         Some(SetupRole::Active) => Ok(DtlsRole::Server),
-        Some(SetupRole::Passive) => Err(RtcError::Unsupported(
-            "an answer with a=setup:passive; the offerer's DTLS certificate is bound to the \
-             server role when the offer is created",
-        )),
+        Some(SetupRole::Passive) => Ok(DtlsRole::Client),
         Some(SetupRole::ActPass) => Err(RtcError::Negotiation(
-            "the remote answer uses a=setup:actpass, which only an offer may use".into(),
+            "the remote answer uses a=setup:actpass, which only an offer may use (RFC 5763 §5)"
+                .into(),
         )),
         Some(SetupRole::HoldConn) => Err(RtcError::Negotiation(
             "the remote answer holds the connection (a=setup:holdconn)".into(),
@@ -186,11 +184,14 @@ mod tests {
 
     #[test]
     fn answer_setup_is_validated() {
-        assert_eq!(dtls_role_for_answer(Some(SetupRole::Active)).unwrap(), DtlsRole::Server);
-        assert!(matches!(
-            dtls_role_for_answer(Some(SetupRole::Passive)),
-            Err(RtcError::Unsupported(_))
-        ));
+        assert_eq!(
+            dtls_role_for_answer(Some(SetupRole::Active)).unwrap(),
+            DtlsRole::Server
+        );
+        assert_eq!(
+            dtls_role_for_answer(Some(SetupRole::Passive)).unwrap(),
+            DtlsRole::Client
+        );
         assert!(matches!(
             dtls_role_for_answer(Some(SetupRole::ActPass)),
             Err(RtcError::Negotiation(_))

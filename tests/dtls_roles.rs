@@ -104,24 +104,25 @@ fn rewrite_setup(answer: &mut rtc::Answer, setup: SetupRole) {
 }
 
 #[test]
-fn offerer_rejects_a_passive_answer_instead_of_deadlocking() {
+fn offerer_takes_the_client_role_for_a_passive_answer() {
     let mut a = PeerConnection::new(av_config()).expect("peer a");
     let config = RtcConfig {
         answer_dtls_role: DtlsRole::Server,
         ..av_config()
     };
     let mut b = PeerConnection::new(config).expect("peer b");
-    b.set_remote_description(RemoteDescription::Offer(a.create_offer().expect("offer")))
+    let offer = a.create_offer().expect("offer");
+    assert!(write_sdp(offer.sdp()).expect("offer text").contains("a=setup:actpass"));
+    assert_eq!(a.dtls_role(), None, "the offerer's role waits for the answer");
+    b.set_remote_description(RemoteDescription::Offer(offer))
         .expect("apply offer");
     let answer = b.create_answer().expect("answer");
-    let result = a.set_remote_description(RemoteDescription::Answer(answer));
-    assert!(
-        matches!(result, Err(RtcError::Unsupported(_))),
-        "{result:?}"
-    );
-    assert_eq!(a.signaling_state(), SignalingState::HaveLocalOffer);
-    assert_eq!(a.connection_state(), ConnectionState::New);
-    assert_eq!(a.dtls_role(), None);
+    assert!(write_sdp(answer.sdp()).expect("answer text").contains("a=setup:passive"));
+    a.set_remote_description(RemoteDescription::Answer(answer))
+        .expect("a passive answer is accepted");
+    assert_eq!(a.signaling_state(), SignalingState::Stable);
+    assert_eq!(a.dtls_role(), Some(DtlsRole::Client));
+    assert_eq!(b.dtls_role(), Some(DtlsRole::Server));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{av_config, SyntheticVideoSource, ToneSource};
-use rtc::{ConnectionState, DtlsRole, Event, PeerConnection, RemoteDescription, Stats};
+use rtc::{ConnectionState, DtlsRole, Event, PeerConnection, RemoteDescription, RtcConfig, Stats};
 
 #[derive(Default)]
 struct Seen {
@@ -45,7 +45,7 @@ fn pump(pc: &PeerConnection, peer: &PeerConnection, seen: &mut Seen) {
     }
 }
 
-fn call(offerer: &mut PeerConnection, answerer: &mut PeerConnection) {
+fn call(offerer: &mut PeerConnection, answerer: &mut PeerConnection, offerer_role: DtlsRole) {
     for pc in [&mut *offerer, &mut *answerer] {
         pc.add_audio_track(Arc::new(ToneSource::new()))
             .expect("audio track");
@@ -61,8 +61,12 @@ fn call(offerer: &mut PeerConnection, answerer: &mut PeerConnection) {
     offerer
         .set_remote_description(RemoteDescription::Answer(answer))
         .expect("apply answer");
-    assert_eq!(offerer.dtls_role(), Some(DtlsRole::Server));
-    assert_eq!(answerer.dtls_role(), Some(DtlsRole::Client));
+    let answerer_role = match offerer_role {
+        DtlsRole::Client => DtlsRole::Server,
+        DtlsRole::Server => DtlsRole::Client,
+    };
+    assert_eq!(offerer.dtls_role(), Some(offerer_role));
+    assert_eq!(answerer.dtls_role(), Some(answerer_role));
 
     let mut so = Seen::default();
     let mut sa = Seen::default();
@@ -104,12 +108,23 @@ fn call(offerer: &mut PeerConnection, answerer: &mut PeerConnection) {
 fn loopback_full_stack() {
     let mut a = PeerConnection::new(av_config()).expect("peer a");
     let mut b = PeerConnection::new(av_config()).expect("peer b");
-    call(&mut a, &mut b);
+    call(&mut a, &mut b, DtlsRole::Server);
 }
 
 #[test]
 fn loopback_full_stack_with_roles_swapped() {
     let mut a = PeerConnection::new(av_config()).expect("peer a");
     let mut b = PeerConnection::new(av_config()).expect("peer b");
-    call(&mut b, &mut a);
+    call(&mut b, &mut a, DtlsRole::Server);
+}
+
+#[test]
+fn loopback_full_stack_with_a_passive_answer() {
+    let mut a = PeerConnection::new(av_config()).expect("peer a");
+    let passive = RtcConfig {
+        answer_dtls_role: DtlsRole::Server,
+        ..av_config()
+    };
+    let mut b = PeerConnection::new(passive).expect("peer b");
+    call(&mut a, &mut b, DtlsRole::Client);
 }

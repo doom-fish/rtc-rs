@@ -8,10 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- The remote SDP fingerprint is pinned in the DTLS configuration (by the
-  answerer when it applies the offer, by the offerer through
-  `set_expected_peer_fingerprint` when it applies the answer), so a certificate
-  that does not match fails the handshake itself. The post-handshake
+- The remote SDP fingerprint is pinned in the DTLS configuration of both sides
+  (the connection is created once the remote description is known), so a
+  certificate that does not match fails the handshake itself. The post-handshake
   comparison, which ran with `expected_peer_fingerprint: None`, is removed.
 - ICE ufrag (132 bits), ICE password (192 bits), SSRCs and the SDP session id
   come from the system CSPRNG (`SecRandomCopyBytes`). The clock-seeded
@@ -32,9 +31,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   discarded: they fail the connection after the fatal alert is flushed. The
   DTLS timer fires when `timeout()` reports 0 ms left instead of treating the
   remaining milliseconds as a deadline.
-- The answerer honours the offer's `a=setup`, and the offerer validates the
-  answer's, so a `passive` answer no longer leaves both sides waiting as DTLS
-  servers.
+- The answerer honours the offer's `a=setup`, and the offerer follows the
+  answer's: it creates its certificate (`dtls::Certificate`) with the offer and
+  its DTLS connection when the answer arrives, as the server for `active` and
+  the client for `passive`. A `passive` answer no longer leaves both sides
+  waiting as DTLS servers.
 - Every remote SSRC has its own SRTCP receive context, so RTCP from a slower
   SSRC is no longer dropped as a replay; every local sender SSRC has its own
   SRTCP send context.
@@ -98,9 +99,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** `add_remote_candidate` and `add_remote_candidate_immediate`
   parse the line on the calling thread, applying `RtcConfig::mdns`, and return
   parse errors.
-- **Breaking:** an answer with `a=setup:passive` returns
-  `RtcError::Unsupported`; `actpass`, `holdconn` or no `a=setup` in an answer,
-  and `holdconn` in an offer, return `RtcError::Negotiation`. Several distinct
+- **Breaking:** `actpass` (RFC 5763 reserves it for offers), `holdconn` or no
+  `a=setup` in an answer, and `holdconn` in an offer, return
+  `RtcError::Negotiation`. Several distinct
   SHA-256 fingerprints return `Unsupported`, and bundled sections that disagree
   on ICE or DTLS parameters return `Negotiation`.
 - **Breaking:** `Event::Disconnected(String)` is replaced by
@@ -143,7 +144,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `send_errors` and `dropped_events`; `send_loss`, `rtt_ms`, `remb_bitrate` and
   the receive bitrates are now filled in.
 - Re-exports of `write_sdp`, `Clock`, `SystemClock` and `MdnsPolicy`.
-- Tests for both DTLS roles against a scripted peer, fingerprint mismatches, a
+- Tests for both answer directions on loopback (the offerer as DTLS server and,
+  after a passive answer, as client), rtc-rs as DTLS server against a scripted
+  peer, fingerprint mismatches, a
   stalled handshake, consent expiry with an injected clock, a relay-only call,
   spoofed-SSRC floods and the TWCC wrap.
 

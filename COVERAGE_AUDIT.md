@@ -11,7 +11,7 @@ sibling crates versus what those crates expose but `rtc-rs` does not yet call.
 |---------------|------------------------|--------------------|
 | `sdp` | Offer/answer build + parse, session-level fallbacks, m-line negotiation (payload type, MID, extmap ids, direction, `rtcp-fb`), DTLS fingerprint and `a=setup`, ICE ufrag/pwd, inline candidates, `end-of-candidates`, rtcp-mux, BUNDLE | Renegotiation (`previous_answer`), data-channel (SCTP) attributes |
 | `ice` | Host, STUN srflx and UDP TURN relay gathering on the agent socket, relay-only policy, trickle, remote end-of-candidates, mDNS policy, injectable clock, connectivity checks, consent, failure callback, source-filtered delivery, selected-pair send | ICE restart, TCP candidates, custom limits and integrity modes |
-| `dtls` | Handshake in both roles with the peer fingerprint pinned (config for the answerer, `set_expected_peer_fingerprint` for the offerer), fatal errors and `Timeout`, retransmission timer, `use_srtp`, `export_keying_material` | Role-independent certificates (not offered by `dtls` 0.2), session resumption |
+| `dtls` | `Certificate::generate` before the role is known, `Config::with_certificate`, handshake in both roles with the peer fingerprint pinned in the config, fatal errors and `Timeout`, retransmission timer, `use_srtp`, `export_keying_material` | `set_expected_peer_fingerprint`, session resumption |
 | `srtp` | Per-SSRC SRTP and SRTCP sessions (GCM) from one derived key per direction, encrypted SRTCP required on receive | AES-CM (HMAC-SHA1) profiles, custom replay windows, `with_roc` |
 | `rtp` | Packet build/parse, header extensions by negotiated id (MID, TWCC), SR/RR, NACK, PLI, FIR, REMB, TWCC encode/parse, reception statistics | abs-send-time, SDES, BYE, APP, SLI |
 | `opus` | Encode/decode at 48 kHz mono, run-time bitrate changes | FEC/PLC (`decode_fec`, `decode_lost`), DTX tuning |
@@ -20,10 +20,6 @@ sibling crates versus what those crates expose but `rtc-rs` does not yet call.
 
 ## Known gaps (0.2.0)
 
-- **The offerer cannot be the DTLS client.** `dtls` 0.2 generates the
-  certificate inside `Connection::new` for a fixed role, so the fingerprint in
-  an offer is bound to the server role. An answer with `a=setup:passive` is
-  refused with `RtcError::Unsupported`.
 - **One certificate per peer.** An SDP carrying several distinct SHA-256
   fingerprints is refused; `dtls` pins exactly one.
 - **No SCTP / data channels.** An active `m=application` section is refused; a
