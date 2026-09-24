@@ -19,6 +19,16 @@ transitively by the sibling crates).
   (macOS 13).
 - Rust 1.82 or later.
 
+## Installation
+
+The crate is not published to crates.io; depend on it by path from a sibling
+checkout:
+
+```toml
+[dependencies]
+rtc-rs = { path = "../rtc-rs", version = "0.2" }
+```
+
 ## Architecture
 
 ```text
@@ -67,7 +77,7 @@ pc.set_remote_description(RemoteDescription::Answer(rtc::Answer::parse(&answer_t
 // Trickle remote candidates in as they arrive, then pump events.
 while let Some(ev) = pc.recv_event_timeout(Duration::from_millis(100)) {
     match ev {
-        Event::LocalCandidate(line) => { /* send `line` to the peer */ }
+        Event::LocalCandidate(line) => println!("send to the peer: {line}"),
         Event::Connected => println!("media is flowing"),
         Event::AudioFrame(ssrc, pcm, rate, channels) => {
             // render `pcm` (interleaved i16)
@@ -109,8 +119,8 @@ cargo run --example 02_loopback
   ICE-validated remote is accepted; afterwards every DTLS, SRTP and SRTCP
   datagram must come from the selected pair's remote address.
 - **SRTP state.** A receive context for an SSRC is only stored once one of its
-  packets authenticates. SRTP and SRTCP each keep their own per-SSRC contexts,
-  at most 32 per direction, least recently used first out. Send contexts exist
+  packets authenticates. SRTP and SRTCP each keep their own per-SSRC receive
+  contexts, at most 32 each, least recently used first out. Send contexts exist
   only for our own SSRCs.
 - **Failure.** DTLS errors, a DTLS handshake that has not finished
   `RtcConfig::handshake_timeout` (30 s by default) after ICE selected a pair,
