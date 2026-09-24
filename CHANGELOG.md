@@ -86,8 +86,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `srtp-rs`, `rtp-rs`, `opus-rs`, `stun-rs` and `turn-rs` `>=0.2, <0.3`, and
   for `apple-media` `avcapture` `>=0.7, <0.8`, `audiounit` `>=0.4, <0.5`,
   `audiotoolbox` `>=0.5, <0.6`, `videotoolbox` `>=0.21, <0.22`, `apple-metal`
-  `>=0.10, <0.11` and `coreanimation-rs` `>=0.6, <0.7`. The unused direct
-  `libc` dependency is removed and `zeroize` `>=1.6, <1.9` is added.
+  `>=0.10, <0.11` and `coreanimation-rs` `>=0.6, <0.7`, and the `rtp-rs`
+  dev-dependency is `>=0.2, <0.3`. The unused direct `libc` dependency is
+  removed and `zeroize` `>=1.6, <1.9` is added.
 - **Breaking:** binaries need macOS 14 or later (inherited from
   `networkframework` through `stun-rs`, `turn-rs` and `ice-rs`), and the crate
   needs Rust 1.82.

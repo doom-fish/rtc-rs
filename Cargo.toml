@@ -65,4 +65,4 @@ name = "03_silence_call"
 path = "examples/03_silence_call.rs"
 
 [dev-dependencies]
-rtp = { path = "../rtp-rs", package = "rtp-rs" }
+rtp = { path = "../rtp-rs", package = "rtp-rs", version = ">=0.2, <0.3" }
