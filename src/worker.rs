@@ -55,6 +55,7 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_REPORT_BLOCKS: usize = 31;
 const SRTP_OVERHEAD: usize = 64;
+const CLOSE_NOTIFY: u8 = 0;
 
 /// Control messages sent from [`crate::PeerConnection`] to the worker.
 pub(crate) enum Command {
@@ -416,7 +417,9 @@ impl Worker {
         }
         let now = self.elapsed();
         self.track_selection(now);
-        self.drain_inbound(now)?;
+        if !self.drain_inbound(now)? {
+            return Ok(false);
+        }
         self.drive_dtls(now)?;
         if self.srtp.is_some() {
             self.send_media(now)?;
@@ -462,7 +465,7 @@ impl Worker {
         self.selected_remote = Some(remote.addr);
     }
 
-    fn drain_inbound(&mut self, now: Duration) -> Result<()> {
+    fn drain_inbound(&mut self, now: Duration) -> Result<bool> {
         while let Ok(Inbound {
             kind,
             mut bytes,
@@ -480,6 +483,9 @@ impl Worker {
             match kind {
                 InboundKind::Dtls => {
                     if let Err(error) = self.dtls.feed_recv(&bytes, from, millis(now)) {
+                        if peer_closed(&error, self.srtp.is_some()) {
+                            return Ok(false);
+                        }
                         self.flush_alert();
                         return Err(error.into());
                     }
@@ -488,7 +494,7 @@ impl Worker {
                 InboundKind::Srtcp => self.handle_rtcp(&bytes, now)?,
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn drive_dtls(&mut self, now: Duration) -> Result<()> {
@@ -948,6 +954,17 @@ impl StreamCounters {
     }
 }
 
+fn peer_closed(error: &dtls::Error, connected: bool) -> bool {
+    connected
+        && matches!(
+            error,
+            dtls::Error::Alert {
+                description: CLOSE_NOTIFY,
+                ..
+            }
+        )
+}
+
 fn millis(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
@@ -974,4 +991,27 @@ fn ntp_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO);
     ntp_from_unix(d.as_secs(), d.subsec_nanos())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_notify_after_the_handshake_is_a_clean_close() {
+        let close = dtls::Error::Alert { level: 1, description: CLOSE_NOTIFY };
+        let fatal = dtls::Error::Alert { level: 2, description: 40 };
+        assert!(peer_closed(&close, true));
+        assert!(!peer_closed(&close, false));
+        assert!(!peer_closed(&fatal, true));
+        assert!(!peer_closed(&dtls::Error::FingerprintMismatch, true));
+    }
+
+    #[test]
+    fn clock_conversions_wrap_like_the_wire_fields() {
+        assert_eq!(units_65536(Duration::from_secs(1)), 65_536);
+        assert_eq!(units_65536(Duration::from_secs(65_536)), 0);
+        assert_eq!(media_clock(Duration::from_millis(20), 48_000), 960);
+        assert_eq!(ntp_middle(0x1234_5678_9ABC_DEF0), 0x5678_9ABC);
+    }
 }

@@ -61,3 +61,44 @@ fn h264_access_unit_round_trip() {
     assert!(au.annex_b.windows(2).any(|w| w[1] == 0x68), "has PPS");
     assert!(au.annex_b.windows(2).any(|w| w[1] == 0x65), "has IDR");
 }
+
+#[test]
+fn oversized_access_units_are_dropped_not_buffered() {
+    use rtc::media::video_recv::MAX_ACCESS_UNIT_BYTES;
+    let ssrc = 0x4242;
+    let mut receiver = VideoReceiver::new(ssrc);
+    let nal_len = 1024 * 1024;
+    let packet = |seq: u16, ts: u32, marker: bool, len: usize| {
+        let mut payload = vec![0xAB; len];
+        payload[0] = 0x41;
+        rtp::RtpPacket::builder()
+            .payload_type(96)
+            .sequence_number(seq)
+            .timestamp(ts)
+            .ssrc(ssrc)
+            .marker(marker)
+            .payload(payload)
+            .build()
+            .expect("rtp")
+    };
+    let mut units = Vec::new();
+    let oversized = MAX_ACCESS_UNIT_BYTES / nal_len + 2;
+    let mut seq = 1u16;
+    for _ in 0..oversized {
+        let pkt = packet(seq, 1000, false, nal_len);
+        receiver.push(seq, pkt.into_bytes());
+        units.extend(receiver.drain());
+        seq += 1;
+    }
+    let pkt = packet(seq, 1000, true, nal_len);
+    receiver.push(seq, pkt.into_bytes());
+    seq += 1;
+    let next = packet(seq, 4000, true, 64);
+    receiver.push(seq, next.into_bytes());
+    units.extend(receiver.drain());
+    units.extend(receiver.flush());
+
+    assert_eq!(units.len(), 1, "the oversized access unit is discarded");
+    assert_eq!(units[0].rtp_timestamp, 4000);
+    assert!(units[0].annex_b.len() < 128);
+}

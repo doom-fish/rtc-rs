@@ -133,8 +133,7 @@ impl SrtpContext {
         &mut self,
         buf: &'a mut [u8],
     ) -> Result<(rtp::RtpPacket<'a>, Option<u32>)> {
-        use rtp::Packet;
-        let ssrc = rtp::RtpPacket::parse(buf)?.header().ssrc();
+        let ssrc = rtp::RtpHeader::parse(buf)?.0.ssrc();
         if let Some(session) = self.rtp_recv.get_mut(ssrc) {
             return Ok((session.unprotect(buf)?, None));
         }
@@ -319,6 +318,25 @@ mod tests {
 
         let mut wire = protect(&mut remote, &rtp_packet(100, 8));
         assert!(local.unprotect_rtp(&mut wire).unwrap().1.is_none());
+    }
+
+    #[test]
+    fn padded_packets_are_not_rejected_before_decryption() {
+        let (mut local, mut remote) = pair(vec![9]);
+        for seq in 1..=32u16 {
+            let pkt = rtp::RtpPacket::builder()
+                .payload_type(96)
+                .sequence_number(seq)
+                .timestamp(90)
+                .ssrc(9)
+                .payload([seq as u8; 5])
+                .pad_to(16)
+                .build()
+                .unwrap();
+            let mut wire = protect(&mut remote, &pkt);
+            let (packet, _) = local.unprotect_rtp(&mut wire).unwrap();
+            assert_eq!(packet.payload(), &[seq as u8; 5]);
+        }
     }
 
     #[test]

@@ -16,12 +16,17 @@ pub struct VideoAccessUnit {
     pub rtp_timestamp: u32,
 }
 
+#[allow(missing_docs)]
+pub const MAX_ACCESS_UNIT_BYTES: usize = 4 * 1024 * 1024;
+
 /// Reassembles one inbound H.264 stream.
 pub struct VideoReceiver {
     depacketizer: Depacketizer,
     jitter: JitterBuffer,
     ssrc: u32,
     pending: Vec<Vec<u8>>,
+    pending_bytes: usize,
+    oversized: bool,
     current_ts: Option<u32>,
 }
 
@@ -30,10 +35,12 @@ impl VideoReceiver {
     #[must_use]
     pub fn new(ssrc: u32) -> Self {
         Self {
-            depacketizer: Depacketizer::new(),
+            depacketizer: Depacketizer::with_max_nal_size(MAX_ACCESS_UNIT_BYTES),
             jitter: JitterBuffer::with_target_ms(100, 33),
             ssrc,
             pending: Vec::new(),
+            pending_bytes: 0,
+            oversized: false,
             current_ts: None,
         }
     }
@@ -84,16 +91,16 @@ impl VideoReceiver {
 
         // A timestamp change without a marker bit also ends the previous AU.
         if let Some(prev) = self.current_ts {
-            if prev != ts && !self.pending.is_empty() {
+            if prev != ts {
                 self.emit_au(prev, out);
             }
         }
         self.current_ts = Some(ts);
 
         if let Ok(Some(nal)) = self.depacketizer.push(seq, pkt.payload()) {
-            self.pending.push(nal);
+            self.push_nal(nal);
             while let Some(nal) = self.depacketizer.pop() {
-                self.pending.push(nal);
+                self.push_nal(nal);
             }
         }
 
@@ -103,7 +110,23 @@ impl VideoReceiver {
         }
     }
 
+    fn push_nal(&mut self, nal: Vec<u8>) {
+        if self.oversized {
+            return;
+        }
+        if self.pending_bytes.saturating_add(nal.len()) > MAX_ACCESS_UNIT_BYTES {
+            self.pending.clear();
+            self.pending_bytes = 0;
+            self.oversized = true;
+            return;
+        }
+        self.pending_bytes += nal.len();
+        self.pending.push(nal);
+    }
+
     fn emit_au(&mut self, ts: u32, out: &mut Vec<VideoAccessUnit>) {
+        self.oversized = false;
+        self.pending_bytes = 0;
         if self.pending.is_empty() {
             return;
         }
