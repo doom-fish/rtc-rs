@@ -16,8 +16,8 @@ fn twcc_of(pkt: &rtp::RtpPacketOwned) -> u16 {
 fn shared_counter_stamps_consecutive_seqs() {
     let audio_cfg = MediaConfig::opus_default();
     let video_cfg = MediaConfig::h264_constrained_baseline();
-    let mut audio = AudioSender::new(&audio_cfg, 1, "0".to_string(), 1, 3).expect("audio");
-    let mut video = VideoSender::new(&video_cfg, 2, "1".to_string(), 1, 3);
+    let mut audio = AudioSender::new(&audio_cfg, 1, "0".to_string(), Some(1), Some(3)).expect("audio");
+    let mut video = VideoSender::new(&video_cfg, 2, "1".to_string(), Some(1), Some(3));
     let mut twcc = SeqCounter::new();
 
     let silence = [0i16; SAMPLES_PER_FRAME];
@@ -27,14 +27,13 @@ fn shared_counter_stamps_consecutive_seqs() {
     seqs.push(twcc_of(&a0));
 
     let frame = CapturedFrame {
-        pixel_buffer: 0,
         width: 320,
         height: 240,
         rtp_timestamp: 3000,
         keyframe: true,
         data: vec![0, 0, 0, 1, 0x65, 1, 2, 3, 4, 5],
     };
-    for pkt in video.encode(&frame, &mut twcc) {
+    for pkt in video.encode(&frame, &mut twcc).expect("packetize") {
         seqs.push(twcc_of(&pkt));
     }
 

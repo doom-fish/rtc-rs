@@ -18,11 +18,11 @@ fn config() -> RtcConfig {
 }
 
 fn main() {
-    let mut a = PeerConnection::new(config());
-    let mut b = PeerConnection::new(config());
+    let mut a = PeerConnection::new(config()).expect("peer a");
+    let mut b = PeerConnection::new(config()).expect("peer b");
 
-    a.add_audio_track(Arc::new(SilenceAudioSource));
-    b.add_audio_track(Arc::new(SilenceAudioSource));
+    a.add_audio_track(Arc::new(SilenceAudioSource)).expect("audio track");
+    b.add_audio_track(Arc::new(SilenceAudioSource)).expect("audio track");
 
     let offer = a.create_offer().expect("offer");
     b.set_remote_description(RemoteDescription::Offer(offer))

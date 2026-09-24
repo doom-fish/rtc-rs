@@ -2,7 +2,7 @@
 //! is refused outright; an offer whose data section is already rejected
 //! (port 0) is tolerated and answered.
 
-use rtc::{MediaConfig, Offer, PeerConnection, RemoteDescription, RtcConfig};
+use rtc::{write_sdp, MediaConfig, Offer, PeerConnection, RemoteDescription, RtcConfig};
 
 const HEAD: &str = "v=0\r\n\
 o=- 2795505170280940885 1 IN IP4 0.0.0.0\r\n\
@@ -40,7 +40,7 @@ fn peer() -> PeerConnection {
         .audio(MediaConfig::opus_default())
         .loopback_only(true)
         .build();
-    PeerConnection::new(cfg)
+    PeerConnection::new(cfg).expect("peer")
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn rejected_data_channel_is_tolerated() {
         .expect("rejected data channel is tolerated");
     let answer = b.create_answer().expect("answer");
     assert!(
-        answer.to_string().contains("m=audio"),
+        write_sdp(answer.sdp()).expect("answer text").contains("m=audio"),
         "audio still answered"
     );
 }

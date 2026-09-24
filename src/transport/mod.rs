@@ -6,14 +6,23 @@ pub mod dtls_glue;
 pub mod ice_glue;
 pub mod srtp_glue;
 
+use std::net::SocketAddr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundKind {
+    /// A DTLS record to feed into [`dtls::Connection::feed_recv`].
+    Dtls,
+    /// An SRTP media packet.
+    Srtp,
+    /// An SRTCP control packet.
+    Srtcp,
+}
+
 /// An inbound datagram routed off the shared ICE socket, demultiplexed by
 /// [`ice::PacketKind`] and (for the RTP family) by [`demux`].
 #[derive(Debug, Clone)]
-pub enum Inbound {
-    /// A DTLS record to feed into [`dtls::Connection::feed_recv`].
-    Dtls(Vec<u8>),
-    /// An SRTP media packet.
-    Srtp(Vec<u8>),
-    /// An SRTCP control packet.
-    Srtcp(Vec<u8>),
+pub struct Inbound {
+    pub kind: InboundKind,
+    pub bytes: Vec<u8>,
+    pub from: SocketAddr,
 }

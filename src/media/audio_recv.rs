@@ -63,7 +63,7 @@ impl AudioReceiver {
 
     fn decode_one(&mut self, wire: &[u8]) -> Option<DecodedAudio> {
         let pkt = RtpPacket::parse(wire).ok()?;
-        let n = self.decoder.decode(pkt.payload(), &mut self.scratch, false).ok()?;
+        let n = self.decoder.decode(pkt.payload(), &mut self.scratch).ok()?;
         Some(DecodedAudio {
             ssrc: self.ssrc,
             pcm: self.scratch[..n].to_vec(),

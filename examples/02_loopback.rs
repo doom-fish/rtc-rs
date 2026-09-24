@@ -45,9 +45,8 @@ impl VideoSource for Frames {
         let ts = self.ts.fetch_add(3000, Ordering::Relaxed);
         let mut data = vec![0, 0, 0, 1, 0x67, 0x42, 0xe0, 0x1f, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80];
         data.extend_from_slice(&[0, 0, 0, 1, 0x65]);
-        data.extend(std::iter::repeat(0xAB).take(800));
+        data.extend(std::iter::repeat_n(0xAB, 800));
         Some(CapturedFrame {
-            pixel_buffer: 0,
             width: 640,
             height: 480,
             rtp_timestamp: ts,
@@ -66,17 +65,19 @@ fn config() -> RtcConfig {
 }
 
 fn main() {
-    let mut a = PeerConnection::new(config());
-    let mut b = PeerConnection::new(config());
+    let mut a = PeerConnection::new(config()).expect("peer a");
+    let mut b = PeerConnection::new(config()).expect("peer b");
 
     for pc in [&mut a, &mut b] {
         pc.add_audio_track(Arc::new(Tone {
             phase: std::sync::Mutex::new(0.0),
-        }));
+        }))
+        .expect("audio track");
         pc.add_video_track(Arc::new(Frames {
             ts: AtomicU32::new(0),
             next_due: std::sync::Mutex::new(Instant::now()),
-        }));
+        }))
+        .expect("video track");
     }
 
     let offer = a.create_offer().expect("offer");

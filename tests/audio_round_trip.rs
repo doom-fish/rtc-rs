@@ -18,7 +18,7 @@ fn tone(phase: &mut f32) -> [i16; SAMPLES_PER_FRAME] {
 fn opus_round_trip_yields_pcm() {
     let cfg = MediaConfig::opus_default();
     let ssrc = 0x1234_5678;
-    let mut sender = AudioSender::new(&cfg, ssrc, "0".to_string(), 1, 3).expect("sender");
+    let mut sender = AudioSender::new(&cfg, ssrc, "0".to_string(), Some(1), Some(3)).expect("sender");
     let mut receiver = AudioReceiver::new(&cfg, ssrc).expect("receiver");
     let mut twcc = SeqCounter::new();
 

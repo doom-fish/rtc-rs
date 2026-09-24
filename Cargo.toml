@@ -2,7 +2,7 @@
 name = "rtc-rs"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.76"
+rust-version = "1.82"
 license = "MIT OR Apache-2.0"
 description = "Pure-Rust PeerConnection-equivalent WebRTC orchestration for native macOS meeting clients, layered on the doomfish media stack (sdp/ice/dtls/srtp/rtp/opus)"
 authors = ["Per Johansson <per@doom.fish>"]
@@ -21,9 +21,8 @@ crate-type = ["lib"]
 
 [features]
 default = []
-# Opt-in native macOS capture/encode/decode sources. Off by default so the
-# core orchestration stack builds and the loopback test runs on any host
-# without camera/microphone/VideoToolbox hardware. See COVERAGE.md.
+# Compiles the sibling Apple-SDK bindings; no capture, encode, decode or render
+# sources are implemented yet. Off by default. See COVERAGE.md.
 apple-media = [
     "dep:avcapture",
     "dep:audiounit",
@@ -34,24 +33,24 @@ apple-media = [
 ]
 
 [dependencies]
-libc = "0.2"
+zeroize = ">=1.6, <1.9"
 
-sdp = { path = "../sdp-rs", package = "sdp-rs", version = ">=0.1.0, <0.2" }
-ice = { path = "../ice-rs", package = "ice-rs", version = ">=0.1.0, <0.2" }
-dtls = { path = "../dtls-rs", package = "dtls-rs", version = ">=0.1.0, <0.2" }
-srtp = { path = "../srtp-rs", package = "srtp-rs", version = ">=0.1.0, <0.2" }
-rtp = { path = "../rtp-rs", package = "rtp-rs", version = ">=0.1.0, <0.2" }
-opus = { path = "../opus-rs", package = "opus-rs", version = ">=0.1.0, <0.2" }
-stun = { path = "../stun-rs", package = "stun-rs", version = ">=0.1.0, <0.2" }
-turn = { path = "../turn-rs", package = "turn-rs", version = ">=0.1.0, <0.2" }
+sdp = { path = "../sdp-rs", package = "sdp-rs", version = ">=0.2, <0.3" }
+ice = { path = "../ice-rs", package = "ice-rs", version = ">=0.2, <0.3" }
+dtls = { path = "../dtls-rs", package = "dtls-rs", version = ">=0.2, <0.3" }
+srtp = { path = "../srtp-rs", package = "srtp-rs", version = ">=0.2, <0.3" }
+rtp = { path = "../rtp-rs", package = "rtp-rs", version = ">=0.2, <0.3" }
+opus = { path = "../opus-rs", package = "opus-rs", version = ">=0.2, <0.3" }
+stun = { path = "../stun-rs", package = "stun-rs", version = ">=0.2, <0.3" }
+turn = { path = "../turn-rs", package = "turn-rs", version = ">=0.2, <0.3" }
 
 # Native media plane (optional, behind the `apple-media` feature).
-avcapture = { path = "../avcapture-rs", package = "avcapture", optional = true }
-audiounit = { path = "../audiounit-rs", package = "audiounit", optional = true }
-videotoolbox = { path = "../videotoolbox-rs", package = "videotoolbox", optional = true }
-audiotoolbox = { path = "../audiotoolbox-rs", package = "audiotoolbox", optional = true }
-apple-metal = { path = "../apple-metal-rs", package = "apple-metal", optional = true }
-coreanimation = { path = "../coreanimation-rs", package = "coreanimation-rs", optional = true }
+avcapture = { path = "../avcapture-rs", package = "avcapture", version = ">=0.7, <0.8", optional = true }
+audiounit = { path = "../audiounit-rs", package = "audiounit", version = ">=0.4, <0.5", optional = true }
+videotoolbox = { path = "../videotoolbox-rs", package = "videotoolbox", version = ">=0.21, <0.22", optional = true }
+audiotoolbox = { path = "../audiotoolbox-rs", package = "audiotoolbox", version = ">=0.5, <0.6", optional = true }
+apple-metal = { path = "../apple-metal-rs", package = "apple-metal", version = ">=0.10, <0.11", optional = true }
+coreanimation = { path = "../coreanimation-rs", package = "coreanimation-rs", version = ">=0.6, <0.7", optional = true }
 
 [[example]]
 name = "01_offer_answer_local"

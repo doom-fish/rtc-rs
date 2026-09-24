@@ -79,6 +79,7 @@ impl VideoReceiver {
             return;
         };
         let ts = pkt.header().timestamp();
+        let seq = pkt.header().sequence_number();
         let marker = pkt.header().marker();
 
         // A timestamp change without a marker bit also ends the previous AU.
@@ -89,7 +90,7 @@ impl VideoReceiver {
         }
         self.current_ts = Some(ts);
 
-        if let Ok(Some(nal)) = self.depacketizer.push(pkt.payload()) {
+        if let Ok(Some(nal)) = self.depacketizer.push(seq, pkt.payload()) {
             self.pending.push(nal);
             while let Some(nal) = self.depacketizer.pop() {
                 self.pending.push(nal);

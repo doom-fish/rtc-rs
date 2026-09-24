@@ -26,7 +26,7 @@ pub fn sender_report(
 /// Build a Receiver Report (RFC 3550 §6.4.2).
 #[must_use]
 pub fn receiver_report(ssrc: u32, blocks: Vec<ReportBlock>) -> RtcpPacket {
-    let mut b = RtcpPacket::receiver_report().ssrc(ssrc);
+    let mut b = RtcpPacket::receiver_report(ssrc);
     for block in blocks {
         b = b.add_block(block);
     }

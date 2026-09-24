@@ -2,56 +2,76 @@
 //! to the worker by [`ice::PacketKind`].
 
 use super::demux::{muxed_kind, MuxedKind};
-use super::Inbound;
-use crate::config::RtcConfig;
+use super::{Inbound, InboundKind};
+use crate::config::{ResolvedIceServer, RtcConfig};
 use crate::error::{Result, RtcError};
-use ice::{IceAgent, IceConfig, IceRole, PacketKind, PacketSink};
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use ice::{IceAgent, IceConfig, IceRole, PacketKind, PacketSink, TransportPolicy};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
+
+pub const INBOUND_QUEUE: usize = 1024;
+pub const MAX_INBOUND_DATAGRAM: usize = 16 * 1024;
 
 /// The sink installed on the [`IceAgent`]. Non-STUN datagrams are classified
 /// and forwarded to the worker; unknown datagrams are counted and dropped.
 pub struct WorkerSink {
     tx: SyncSender<Inbound>,
-    dropped_other: AtomicU64,
+    dropped: AtomicU64,
 }
 
 impl WorkerSink {
     /// Create a sink delivering into `tx`.
     #[must_use]
     pub fn new(tx: SyncSender<Inbound>) -> Self {
-        Self { tx, dropped_other: AtomicU64::new(0) }
+        Self {
+            tx,
+            dropped: AtomicU64::new(0),
+        }
     }
 
-    /// Number of `Other`/unroutable datagrams dropped so far.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn dropped_other(&self) -> u64 {
-        self.dropped_other.load(Ordering::Relaxed)
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 }
 
 impl PacketSink for WorkerSink {
-    fn on_packet(&self, kind: PacketKind, bytes: &[u8], _from: SocketAddr) {
-        let msg = match kind {
-            // STUN is consumed by the agent and never reaches the sink, but be
-            // defensive.
-            PacketKind::Stun => return,
-            PacketKind::Dtls => Inbound::Dtls(bytes.to_vec()),
+    fn on_packet(&self, kind: PacketKind, bytes: &[u8], from: SocketAddr) {
+        let kind = match kind {
+            PacketKind::Dtls => InboundKind::Dtls,
             PacketKind::Srtp => match muxed_kind(bytes) {
-                MuxedKind::Rtp => Inbound::Srtp(bytes.to_vec()),
-                MuxedKind::Rtcp => Inbound::Srtcp(bytes.to_vec()),
+                MuxedKind::Rtp => InboundKind::Srtp,
+                MuxedKind::Rtcp => InboundKind::Srtcp,
             },
-            PacketKind::ChannelData | PacketKind::Other => {
-                self.dropped_other.fetch_add(1, Ordering::Relaxed);
+            PacketKind::Stun | PacketKind::ChannelData | PacketKind::Other => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
         };
         // Never block the agent's receive loop: drop on a full channel.
-        let _ = self.tx.try_send(msg);
+        if bytes.len() > MAX_INBOUND_DATAGRAM
+            || self
+                .tx
+                .try_send(Inbound {
+                    kind,
+                    bytes: bytes.to_vec(),
+                    from,
+                })
+                .is_err()
+        {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
+}
+
+pub struct AgentParams<'a> {
+    pub config: &'a RtcConfig,
+    pub controlling: bool,
+    pub local_ufrag: &'a str,
+    pub local_pwd: &'a str,
+    pub remote_ufrag: &'a str,
+    pub remote_pwd: &'a str,
 }
 
 /// Build and start an [`IceAgent`] for one side of the connection.
@@ -59,45 +79,44 @@ impl PacketSink for WorkerSink {
 /// `controlling` selects the ICE role (the offerer is controlling). For
 /// loopback-only configs the agent binds to `127.0.0.1` so two in-process
 /// agents can reach each other with host candidates alone.
-pub fn setup_agent(
-    cfg: &RtcConfig,
-    controlling: bool,
-    local_ufrag: &str,
-    local_pwd: &str,
-    remote_ufrag: &str,
-    remote_pwd: &str,
-) -> Result<IceAgent> {
-    let role = if controlling { IceRole::Controlling } else { IceRole::Controlled };
-    let mut ice_cfg = IceConfig::new(role, local_ufrag, local_pwd, remote_ufrag, remote_pwd);
-
+pub fn setup_agent(params: &AgentParams<'_>) -> Result<IceAgent> {
+    let cfg = params.config;
+    let role = if params.controlling {
+        IceRole::Controlling
+    } else {
+        IceRole::Controlled
+    };
+    let mut ice_cfg = IceConfig::new(
+        role,
+        params.local_ufrag,
+        params.local_pwd,
+        params.remote_ufrag,
+        params.remote_pwd,
+    );
+    ice_cfg.clock = Arc::clone(&cfg.clock);
+    ice_cfg.mdns = cfg.mdns.clone();
     if cfg.loopback_only {
-        ice_cfg.bind_addr = Some("127.0.0.1:0".parse().expect("valid literal"));
+        ice_cfg.bind_addr = Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
     }
-
+    if cfg.relay_only {
+        ice_cfg.policy = TransportPolicy::Relay;
+    }
     for server in &cfg.ice_servers {
-        if server.is_turn() {
-            // TURN relay candidates are a deferred feature (see COVERAGE.md);
-            // STUN server-reflexive gathering covers the common NAT case.
-            continue;
-        }
-        if let Some((host, port)) = split_host_port(server.host_port()) {
-            ice_cfg.stun_servers.push(stun::Endpoint::new(host, port));
+        match server.resolve()? {
+            ResolvedIceServer::Stun(endpoint) => ice_cfg.stun_servers.push(endpoint),
+            ResolvedIceServer::Turn(turn) => ice_cfg.turn_servers.push(turn),
         }
     }
-
     IceAgent::new(ice_cfg).map_err(RtcError::from)
 }
 
 /// Attach the worker sink and gather host (and any STUN) candidates.
-pub fn install_sink_and_gather(agent: &IceAgent, sink: Arc<WorkerSink>) -> Result<()> {
+pub fn install_sink_and_gather(
+    agent: &IceAgent,
+    sink: Arc<WorkerSink>,
+    failed: Arc<AtomicBool>,
+) -> Result<()> {
     agent.set_packet_sink(sink);
-    agent.start_gathering().map_err(RtcError::from)?;
-    agent.end_of_candidates();
-    Ok(())
-}
-
-fn split_host_port(host_port: &str) -> Option<(String, u16)> {
-    let (host, port) = host_port.rsplit_once(':')?;
-    let port: u16 = port.parse().ok()?;
-    Some((host.to_string(), port))
+    agent.on_connection_failed(move || failed.store(true, Ordering::Release));
+    agent.start_gathering().map_err(RtcError::from)
 }

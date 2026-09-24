@@ -1,72 +1,68 @@
 //! Apply a remote SDP description: validate WebRTC requirements and extract
-//! the transport parameters (ICE creds, fingerprint, setup, codecs, SSRCs).
+//! the transport parameters (ICE creds, fingerprint, setup, candidates).
 
 use crate::error::{Result, RtcError};
-use sdp::{Attribute, MediaDescription, MediaKind, Sdp, SetupRole};
-
-/// A negotiated media section.
-/// The negotiated media parameters parsed from a remote SDP m-section. Retained
-/// in full for completeness; the symmetric default-config path drives the
-/// transport from [`crate::config::MediaConfig`] directly.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct NegotiatedMedia {
-    /// The `a=mid` value.
-    pub mid: String,
-    /// The remote payload type for this kind.
-    pub payload_type: u8,
-    /// The remote SSRC, when signaled.
-    pub ssrc: Option<u32>,
-    /// Negotiated MID header-extension id, if present.
-    pub mid_ext_id: Option<u8>,
-    /// Negotiated TWCC header-extension id, if present.
-    pub twcc_ext_id: Option<u8>,
-}
+use sdp::{Attribute, Fingerprint, MediaKind, Sdp, SetupRole};
+use zeroize::Zeroizing;
 
 /// Everything `rtc` needs from a remote description to drive the transport.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct RemoteParams {
     /// Remote ICE username fragment.
     pub ice_ufrag: String,
     /// Remote ICE password.
-    pub ice_pwd: String,
+    pub ice_pwd: Zeroizing<String>,
     /// Remote DTLS fingerprint (SHA-256).
     pub fingerprint_sha256: [u8; 32],
     /// Remote `a=setup` role.
-    pub setup: SetupRole,
-    /// Negotiated audio section, if any.
-    pub audio: Option<NegotiatedMedia>,
-    /// Negotiated video section, if any.
-    pub video: Option<NegotiatedMedia>,
+    pub setup: Option<SetupRole>,
     /// In-line ICE candidates parsed from the SDP, if any.
-    pub candidates: Vec<sdp::Candidate>,
+    pub candidates: Vec<String>,
+    pub end_of_candidates: bool,
+}
+
+struct Transport {
+    ufrag: String,
+    pwd: Zeroizing<String>,
+    fingerprint: [u8; 32],
+    setup: Option<SetupRole>,
+}
+
+impl Transport {
+    fn same_as(&self, other: &Self) -> bool {
+        self.ufrag == other.ufrag
+            && self.pwd.as_str() == other.pwd.as_str()
+            && self.fingerprint == other.fingerprint
+            && self.setup == other.setup
+    }
 }
 
 /// Validate the WebRTC profile requirements and pull out [`RemoteParams`].
 ///
 /// Requirements enforced (RFC 8843 / RFC 5763 / RFC 5761):
 /// * a BUNDLE group is present,
-/// * every non-rejected media section has rtcp-mux,
-/// * ICE ufrag/pwd and a SHA-256 fingerprint are present,
+/// * every media section that carries its own transport has rtcp-mux,
+/// * ICE ufrag/pwd and exactly one SHA-256 fingerprint are present, and all
+///   bundled sections agree on them,
 /// * `m=application` data channels are tolerated only when rejected (port 0).
 pub fn apply_remote(sdp: &Sdp) -> Result<RemoteParams> {
     if sdp.bundle_group().is_none() {
-        return Err(RtcError::Negotiation("remote SDP has no BUNDLE group".into()));
+        return Err(RtcError::Negotiation(
+            "remote SDP has no BUNDLE group".into(),
+        ));
     }
 
-    let mut audio = None;
-    let mut video = None;
-    let mut ice_ufrag = None;
-    let mut ice_pwd = None;
-    let mut fingerprint = None;
-    let mut setup = None;
+    let mut transport: Option<Transport> = None;
     let mut candidates = Vec::new();
+    let mut end_of_candidates = sdp
+        .attributes
+        .iter()
+        .any(|a| matches!(a, Attribute::EndOfCandidates));
 
     for m in &sdp.media {
         // A data channel is acceptable only when it is rejected (port 0).
         if m.kind == MediaKind::Application {
-            if !m.is_rejected() && m.port != 0 {
+            if !m.is_rejected() {
                 return Err(RtcError::Negotiation(
                     "remote offered an active data channel (m=application); only rejected \
                      data channels are supported"
@@ -76,7 +72,7 @@ pub fn apply_remote(sdp: &Sdp) -> Result<RemoteParams> {
             continue;
         }
 
-        if m.is_rejected() || m.port == 0 {
+        if m.port == 0 {
             continue;
         }
 
@@ -88,116 +84,141 @@ pub fn apply_remote(sdp: &Sdp) -> Result<RemoteParams> {
         }
 
         // Session- or media-level ICE/fingerprint/setup (media-level wins).
-        if let Some(u) = media_ufrag(m) {
-            ice_ufrag = Some(u);
-        }
-        if let Some(p) = media_pwd(m) {
-            ice_pwd = Some(p);
-        }
-        if let Some(fp) = m.fingerprint() {
-            fingerprint = Some(parse_fp(&fp.algorithm, &fp.digest)?);
-        }
-        if let Some(s) = m.setup() {
-            setup = Some(s);
-        }
-        for attr in &m.attributes {
-            if let Attribute::Candidate(c) = attr {
-                candidates.push(c.clone());
+        let section = Transport {
+            ufrag: sdp
+                .ice_ufrag_for(m)
+                .ok_or_else(|| RtcError::Negotiation("remote SDP missing ice-ufrag".into()))?
+                .to_string(),
+            pwd: Zeroizing::new(
+                sdp.ice_pwd_for(m)
+                    .ok_or_else(|| RtcError::Negotiation("remote SDP missing ice-pwd".into()))?
+                    .to_string(),
+            ),
+            fingerprint: select_fingerprint(&sdp.fingerprints_for(m))?,
+            setup: sdp.setup_for(m),
+        };
+        match &transport {
+            Some(first) if !first.same_as(&section) => {
+                return Err(RtcError::Negotiation(
+                    "bundled media sections disagree on their ICE or DTLS parameters".into(),
+                ));
             }
+            Some(_) => {}
+            None => transport = Some(section),
         }
 
-        let neg = negotiate_section(m);
-        match m.kind {
-            MediaKind::Audio => audio = Some(neg),
-            MediaKind::Video => video = Some(neg),
-            _ => {}
-        }
+        candidates.extend(m.candidates().into_iter().map(|c| format!("candidate:{c}")));
+        end_of_candidates |= m
+            .attributes
+            .iter()
+            .any(|a| matches!(a, Attribute::EndOfCandidates));
     }
 
-    // Fall back to session-level attributes.
-    for attr in &sdp.attributes {
-        match attr {
-            Attribute::IceUfrag(u) if ice_ufrag.is_none() => ice_ufrag = Some(u.clone()),
-            Attribute::IcePwd(p) if ice_pwd.is_none() => ice_pwd = Some(p.clone()),
-            Attribute::Fingerprint(fp) if fingerprint.is_none() => {
-                fingerprint = Some(parse_fp(&fp.algorithm, &fp.digest)?);
-            }
-            Attribute::Setup(s) if setup.is_none() => setup = Some(*s),
-            _ => {}
-        }
-    }
-
+    let transport = transport
+        .ok_or_else(|| RtcError::Negotiation("remote SDP has no active media section".into()))?;
     Ok(RemoteParams {
-        ice_ufrag: ice_ufrag
-            .ok_or_else(|| RtcError::Negotiation("remote SDP missing ice-ufrag".into()))?,
-        ice_pwd: ice_pwd
-            .ok_or_else(|| RtcError::Negotiation("remote SDP missing ice-pwd".into()))?,
-        fingerprint_sha256: fingerprint
-            .ok_or_else(|| RtcError::Negotiation("remote SDP missing sha-256 fingerprint".into()))?,
-        setup: setup.unwrap_or(SetupRole::ActPass),
-        audio,
-        video,
+        ice_ufrag: transport.ufrag,
+        ice_pwd: transport.pwd,
+        fingerprint_sha256: transport.fingerprint,
+        setup: transport.setup,
         candidates,
+        end_of_candidates,
     })
 }
 
-fn negotiate_section(m: &MediaDescription) -> NegotiatedMedia {
-    let payload_type = m
-        .rtpmaps()
-        .first()
-        .map_or_else(
-            || m.formats.first().and_then(|f| f.parse().ok()).unwrap_or(0),
-            |r| r.payload,
-        );
-
-    let mut ssrc = None;
-    let mut mid_ext_id = None;
-    let mut twcc_ext_id = None;
-    for attr in &m.attributes {
-        match attr {
-            Attribute::Ssrc(s) if ssrc.is_none() => ssrc = Some(s.id),
-            Attribute::Extmap(e) => {
-                if e.uri == sdp::extmap::URI_MID {
-                    mid_ext_id = u8::try_from(e.id).ok();
-                } else if e.uri == sdp::extmap::URI_TWCC {
-                    twcc_ext_id = u8::try_from(e.id).ok();
-                }
+fn select_fingerprint(fingerprints: &[&Fingerprint]) -> Result<[u8; 32]> {
+    let mut chosen: Option<[u8; 32]> = None;
+    for fp in fingerprints
+        .iter()
+        .filter(|fp| fp.algorithm.eq_ignore_ascii_case("sha-256"))
+    {
+        let digest: [u8; 32] = fp
+            .digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| RtcError::Negotiation("sha-256 fingerprint is not 32 bytes".into()))?;
+        match chosen {
+            None => chosen = Some(digest),
+            Some(existing) if existing == digest => {}
+            Some(_) => {
+                return Err(RtcError::Unsupported(
+                    "several sha-256 fingerprints; the DTLS transport pins exactly one certificate",
+                ))
             }
-            _ => {}
         }
     }
-
-    NegotiatedMedia {
-        mid: m.mid().unwrap_or_default().to_string(),
-        payload_type,
-        ssrc,
-        mid_ext_id,
-        twcc_ext_id,
-    }
-}
-
-fn media_ufrag(m: &MediaDescription) -> Option<String> {
-    m.attributes.iter().find_map(|a| match a {
-        Attribute::IceUfrag(u) => Some(u.clone()),
-        _ => None,
+    chosen.ok_or_else(|| {
+        RtcError::Negotiation(
+            "remote SDP has no sha-256 fingerprint; only sha-256 is supported".into(),
+        )
     })
 }
 
-fn media_pwd(m: &MediaDescription) -> Option<String> {
-    m.attributes.iter().find_map(|a| match a {
-        Attribute::IcePwd(p) => Some(p.clone()),
-        _ => None,
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn parse_fp(algorithm: &str, digest: &[u8]) -> Result<[u8; 32]> {
-    if !algorithm.eq_ignore_ascii_case("sha-256") {
-        return Err(RtcError::Negotiation(format!(
-            "unsupported fingerprint algorithm {algorithm:?}; only sha-256 is supported"
-        )));
+    const FP_A: &str = "23:3B:8A:6B:DF:BD:0B:D3:D0:13:2B:6A:F5:C5:5D:46:F7:A3:61:C0:A0:41:C6:A7:A8:2B:7D:75:12:BA:95:49";
+    const FP_B: &str = "00:3B:8A:6B:DF:BD:0B:D3:D0:13:2B:6A:F5:C5:5D:46:F7:A3:61:C0:A0:41:C6:A7:A8:2B:7D:75:12:BA:95:49";
+
+    fn sdp(session: &str, audio: &str, video: &str) -> Sdp {
+        let text = format!(
+            "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n{session}\
+             m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=rtcp-mux\r\n{audio}\
+             a=rtpmap:111 opus/48000/2\r\n\
+             m=video 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=rtcp-mux\r\n{video}\
+             a=rtpmap:96 H264/90000\r\n"
+        );
+        Sdp::parse(&text).unwrap()
     }
-    let arr: [u8; 32] = digest
-        .try_into()
-        .map_err(|_| RtcError::Negotiation("sha-256 fingerprint is not 32 bytes".into()))?;
-    Ok(arr)
+
+    fn transport(fp: &str) -> String {
+        format!("a=ice-ufrag:uf\r\na=ice-pwd:pwpwpwpwpwpwpwpwpwpwpw\r\na=fingerprint:sha-256 {fp}\r\na=setup:actpass\r\n")
+    }
+
+    #[test]
+    fn session_level_transport_is_used() {
+        let params = apply_remote(&sdp(&transport(FP_A), "", "")).unwrap();
+        assert_eq!(params.ice_ufrag, "uf");
+        assert_eq!(params.setup, Some(SetupRole::ActPass));
+        assert_eq!(params.fingerprint_sha256[0], 0x23);
+    }
+
+    #[test]
+    fn bundled_sections_must_agree() {
+        let err = apply_remote(&sdp("", &transport(FP_A), &transport(FP_B)));
+        assert!(matches!(err, Err(RtcError::Negotiation(_))));
+        assert!(apply_remote(&sdp("", &transport(FP_A), &transport(FP_A))).is_ok());
+    }
+
+    #[test]
+    fn several_certificates_are_refused() {
+        let both = format!("{}a=fingerprint:sha-256 {FP_B}\r\n", transport(FP_A));
+        assert!(matches!(
+            apply_remote(&sdp(&both, "", "")),
+            Err(RtcError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn other_hash_algorithms_are_skipped() {
+        let extra = format!(
+            "a=fingerprint:sha-1 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33\r\n{}",
+            transport(FP_A)
+        );
+        let params = apply_remote(&sdp(&extra, "", "")).unwrap();
+        assert_eq!(params.fingerprint_sha256[0], 0x23);
+    }
+
+    #[test]
+    fn inline_candidates_and_end_of_candidates_are_collected() {
+        let audio =
+            "a=candidate:1 1 udp 2130706431 127.0.0.1 5000 typ host\r\na=end-of-candidates\r\n";
+        let params = apply_remote(&sdp(&transport(FP_A), audio, "")).unwrap();
+        assert_eq!(
+            params.candidates,
+            vec!["candidate:1 1 udp 2130706431 127.0.0.1 5000 typ host"]
+        );
+        assert!(params.end_of_candidates);
+    }
 }

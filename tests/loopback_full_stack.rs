@@ -2,101 +2,30 @@
 //! handshake over loopback (SDP → trickle ICE → DTLS → SRTP) and exchange live
 //! Opus audio and H.264 video.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+mod common;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rtc::{
-    CapturedFrame, Event, MediaConfig, PeerConnection, RemoteDescription, Result, RtcConfig,
-    VideoSource,
-};
-
-/// A continuous 440 Hz tone — non-blocking, the worker paces it.
-struct ToneSource {
-    phase: std::sync::Mutex<f32>,
-}
-
-impl ToneSource {
-    fn new() -> Self {
-        Self {
-            phase: std::sync::Mutex::new(0.0),
-        }
-    }
-}
-
-impl rtc::AudioSource for ToneSource {
-    fn next_block(&self, out: &mut [i16; 960]) -> Result<()> {
-        let mut phase = self.phase.lock().unwrap();
-        for s in out.iter_mut() {
-            *s = (phase.sin() * 8000.0) as i16;
-            *phase += 2.0 * std::f32::consts::PI * 440.0 / 48000.0;
-        }
-        Ok(())
-    }
-}
-
-/// A synthetic Annex-B H.264 source emitting an IDR access unit at ~30 fps. It
-/// paces itself off a wall clock and returns `None` when no frame is due yet,
-/// matching the contract of a real capture source (the worker pulls with a zero
-/// timeout and expects `None` when nothing is ready).
-struct SyntheticVideoSource {
-    ts: AtomicU32,
-    next_due: std::sync::Mutex<Instant>,
-}
-
-impl SyntheticVideoSource {
-    fn new() -> Self {
-        Self {
-            ts: AtomicU32::new(0),
-            next_due: std::sync::Mutex::new(Instant::now()),
-        }
-    }
-}
-
-impl VideoSource for SyntheticVideoSource {
-    fn next_frame(&self, _timeout: Duration) -> Option<CapturedFrame> {
-        {
-            let mut due = self.next_due.lock().unwrap();
-            if Instant::now() < *due {
-                return None;
-            }
-            *due += Duration::from_millis(33);
-        }
-        let ts = self.ts.fetch_add(3000, Ordering::Relaxed);
-        let mut data = Vec::new();
-        data.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x42, 0xe0, 0x1f]);
-        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80]);
-        data.extend_from_slice(&[0, 0, 0, 1, 0x65]);
-        data.extend(std::iter::repeat(0xAB).take(800));
-        Some(CapturedFrame {
-            pixel_buffer: 0,
-            width: 640,
-            height: 480,
-            rtp_timestamp: ts,
-            keyframe: true,
-            data,
-        })
-    }
-}
-
-fn av_config() -> RtcConfig {
-    RtcConfig::builder()
-        .audio(MediaConfig::opus_default())
-        .video(MediaConfig::h264_constrained_baseline())
-        .loopback_only(true)
-        .build()
-}
+use common::{av_config, SyntheticVideoSource, ToneSource};
+use rtc::{ConnectionState, DtlsRole, Event, PeerConnection, RemoteDescription, Stats};
 
 #[derive(Default)]
 struct Seen {
     connected: bool,
     audio: bool,
     video: bool,
+    stats: Option<Stats>,
 }
 
 impl Seen {
     fn done(&self) -> bool {
-        self.connected && self.audio && self.video
+        self.connected
+            && self.audio
+            && self.video
+            && self
+                .stats
+                .is_some_and(|s| s.rtt_ms > 0 && s.audio_recv_bitrate > 0)
     }
 }
 
@@ -104,50 +33,83 @@ fn pump(pc: &PeerConnection, peer: &PeerConnection, seen: &mut Seen) {
     while let Some(ev) = pc.poll_event() {
         match ev {
             Event::LocalCandidate(line) => {
-                let _ = peer.add_remote_candidate_immediate(line);
+                peer.add_remote_candidate_immediate(line).expect("trickle");
             }
             Event::Connected => seen.connected = true,
             Event::AudioFrame(..) => seen.audio = true,
             Event::VideoAccessUnit(..) => seen.video = true,
+            Event::Stats(stats) if seen.audio && seen.video => seen.stats = Some(stats),
+            Event::Failed(error) => panic!("connection failed: {error}"),
             _ => {}
         }
     }
 }
 
-#[test]
-fn loopback_full_stack() {
-    let mut a = PeerConnection::new(av_config());
-    let mut b = PeerConnection::new(av_config());
+fn call(offerer: &mut PeerConnection, answerer: &mut PeerConnection) {
+    for pc in [&mut *offerer, &mut *answerer] {
+        pc.add_audio_track(Arc::new(ToneSource::new()))
+            .expect("audio track");
+        pc.add_video_track(Arc::new(SyntheticVideoSource::new()))
+            .expect("video track");
+    }
 
-    a.add_audio_track(Arc::new(ToneSource::new()));
-    a.add_video_track(Arc::new(SyntheticVideoSource::new()));
-    b.add_audio_track(Arc::new(ToneSource::new()));
-    b.add_video_track(Arc::new(SyntheticVideoSource::new()));
-
-    let offer = a.create_offer().expect("offer");
-    b.set_remote_description(RemoteDescription::Offer(offer))
+    let offer = offerer.create_offer().expect("offer");
+    answerer
+        .set_remote_description(RemoteDescription::Offer(offer))
         .expect("apply offer");
-    let answer = b.create_answer().expect("answer");
-    a.set_remote_description(RemoteDescription::Answer(answer))
+    let answer = answerer.create_answer().expect("answer");
+    offerer
+        .set_remote_description(RemoteDescription::Answer(answer))
         .expect("apply answer");
+    assert_eq!(offerer.dtls_role(), Some(DtlsRole::Server));
+    assert_eq!(answerer.dtls_role(), Some(DtlsRole::Client));
 
+    let mut so = Seen::default();
     let mut sa = Seen::default();
-    let mut sb = Seen::default();
-
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        pump(&a, &b, &mut sa);
-        pump(&b, &a, &mut sb);
-        if sa.done() && sb.done() {
+        pump(offerer, answerer, &mut so);
+        pump(answerer, offerer, &mut sa);
+        if so.done() && sa.done() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    assert!(sa.connected && sb.connected, "both peers connected");
-    assert!(sa.audio && sb.audio, "both peers received audio");
-    assert!(sa.video && sb.video, "both peers received video");
+    assert!(so.connected && sa.connected, "both peers connected");
+    assert!(so.audio && sa.audio, "both peers received audio");
+    assert!(so.video && sa.video, "both peers received video");
+    for stats in [so.stats, sa.stats] {
+        let stats = stats.expect("statistics after media");
+        assert!(
+            stats.rtt_ms > 0,
+            "RTT from the peer's receiver reports: {stats:?}"
+        );
+        assert!(
+            stats.audio_recv_bitrate > 0 && stats.video_send_bitrate > 0,
+            "{stats:?}"
+        );
+        assert_eq!(stats.srtp_rejected, 0, "{stats:?}");
+        assert_eq!(stats.dropped_unexpected_source, 0, "{stats:?}");
+    }
+    assert_eq!(offerer.connection_state(), ConnectionState::Connected);
+    assert_eq!(answerer.connection_state(), ConnectionState::Connected);
 
-    a.close();
-    b.close();
+    offerer.close();
+    answerer.close();
+    assert_eq!(offerer.connection_state(), ConnectionState::Closed);
+}
+
+#[test]
+fn loopback_full_stack() {
+    let mut a = PeerConnection::new(av_config()).expect("peer a");
+    let mut b = PeerConnection::new(av_config()).expect("peer b");
+    call(&mut a, &mut b);
+}
+
+#[test]
+fn loopback_full_stack_with_roles_swapped() {
+    let mut a = PeerConnection::new(av_config()).expect("peer a");
+    let mut b = PeerConnection::new(av_config()).expect("peer b");
+    call(&mut b, &mut a);
 }

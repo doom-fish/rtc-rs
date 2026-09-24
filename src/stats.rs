@@ -5,6 +5,7 @@
 /// All rates are instantaneous estimates over the most recent reporting
 /// interval (~1 s). Loss is a fraction in `0.0..=1.0`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Stats {
     /// Outbound audio bitrate, bits per second.
     pub audio_send_bitrate: u32,
@@ -26,4 +27,24 @@ pub struct Stats {
     pub target_video_bitrate: u32,
     /// Remote estimated maximum bitrate (REMB), bits/s, when received.
     pub remb_bitrate: u32,
+    #[allow(missing_docs)]
+    pub target_audio_bitrate: u32,
+    #[allow(missing_docs)]
+    pub remote_streams: u32,
+    #[allow(missing_docs)]
+    pub dropped_unexpected_source: u64,
+    #[allow(missing_docs)]
+    pub dropped_inbound: u64,
+    #[allow(missing_docs)]
+    pub srtp_rejected: u64,
+    #[allow(missing_docs)]
+    pub nacks_received: u64,
+    #[allow(missing_docs)]
+    pub packets_retransmitted: u64,
+    #[allow(missing_docs)]
+    pub keyframe_requests: u64,
+    #[allow(missing_docs)]
+    pub send_errors: u64,
+    #[allow(missing_docs)]
+    pub dropped_events: u64,
 }

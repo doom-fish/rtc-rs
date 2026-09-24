@@ -46,3 +46,21 @@ pub enum SignalingState {
     /// The connection is closed.
     Closed,
 }
+
+#[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectionState {
+    New,
+    Connecting,
+    Connected,
+    Failed,
+    Closed,
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DtlsRole {
+    #[default]
+    Client,
+    Server,
+}

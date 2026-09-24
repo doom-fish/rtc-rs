@@ -6,7 +6,7 @@ use std::fmt;
 pub type Result<T> = core::result::Result<T, RtcError>;
 
 /// Errors surfaced by [`crate::PeerConnection`] and its subsystems.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RtcError {
     /// SDP parsing or negotiation failed.
@@ -31,6 +31,18 @@ pub enum RtcError {
     WorkerGone,
     /// An I/O error occurred.
     Io(String),
+    #[allow(missing_docs)]
+    Config(String),
+    #[allow(missing_docs)]
+    Unsupported(&'static str),
+    #[allow(missing_docs)]
+    Timeout(&'static str),
+    #[allow(missing_docs)]
+    ConsentExpired,
+    #[allow(missing_docs)]
+    IceFailed,
+    #[allow(missing_docs)]
+    Rng,
 }
 
 impl fmt::Display for RtcError {
@@ -47,6 +59,12 @@ impl fmt::Display for RtcError {
             Self::InvalidState(m) => write!(f, "invalid state: {m}"),
             Self::WorkerGone => write!(f, "worker thread terminated"),
             Self::Io(m) => write!(f, "io error: {m}"),
+            Self::Config(m) => write!(f, "invalid configuration: {m}"),
+            Self::Unsupported(m) => write!(f, "unsupported: {m}"),
+            Self::Timeout(m) => write!(f, "timed out: {m}"),
+            Self::ConsentExpired => write!(f, "ICE consent to send expired (RFC 7675)"),
+            Self::IceFailed => write!(f, "ICE failed: no candidate pair works"),
+            Self::Rng => write!(f, "the system random number generator failed"),
         }
     }
 }
@@ -61,25 +79,34 @@ impl From<sdp::SdpError> for RtcError {
 
 impl From<ice::Error> for RtcError {
     fn from(e: ice::Error) -> Self {
-        Self::Ice(format!("{e:?}"))
+        match e {
+            ice::Error::ConsentExpired => Self::ConsentExpired,
+            ice::Error::Failed => Self::IceFailed,
+            ice::Error::Rng => Self::Rng,
+            other => Self::Ice(other.to_string()),
+        }
     }
 }
 
 impl From<dtls::Error> for RtcError {
     fn from(e: dtls::Error) -> Self {
-        Self::Dtls(format!("{e:?}"))
+        match e {
+            dtls::Error::FingerprintMismatch => Self::FingerprintMismatch,
+            dtls::Error::Timeout => Self::Timeout("DTLS handshake retransmissions exhausted"),
+            other => Self::Dtls(other.to_string()),
+        }
     }
 }
 
 impl From<srtp::SrtpError> for RtcError {
     fn from(e: srtp::SrtpError) -> Self {
-        Self::Srtp(format!("{e:?}"))
+        Self::Srtp(e.to_string())
     }
 }
 
 impl From<rtp::Error> for RtcError {
     fn from(e: rtp::Error) -> Self {
-        Self::Rtp(format!("{e:?}"))
+        Self::Rtp(e.to_string())
     }
 }
 

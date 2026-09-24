@@ -13,7 +13,7 @@ fn annexb_access_unit() -> Vec<u8> {
     data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80]);
     // IDR slice with a chunky payload so it spans multiple RTP packets.
     data.extend_from_slice(&[0, 0, 0, 1, 0x65]);
-    data.extend(std::iter::repeat(0xAB).take(4000));
+    data.extend(std::iter::repeat_n(0xAB, 4000));
     data
 }
 
@@ -21,12 +21,11 @@ fn annexb_access_unit() -> Vec<u8> {
 fn h264_access_unit_round_trip() {
     let cfg = MediaConfig::h264_constrained_baseline();
     let ssrc = 0x9999;
-    let mut sender = VideoSender::new(&cfg, ssrc, "1".to_string(), 1, 3);
+    let mut sender = VideoSender::new(&cfg, ssrc, "1".to_string(), Some(1), Some(3));
     let mut receiver = VideoReceiver::new(ssrc);
     let mut twcc = SeqCounter::new();
 
     let frame = CapturedFrame {
-        pixel_buffer: 0,
         width: 1280,
         height: 720,
         rtp_timestamp: 9000,
@@ -34,7 +33,7 @@ fn h264_access_unit_round_trip() {
         data: annexb_access_unit(),
     };
 
-    let packets = sender.encode(&frame, &mut twcc);
+    let packets = sender.encode(&frame, &mut twcc).expect("packetize");
     assert!(
         packets.len() > 1,
         "large access unit should span multiple RTP packets"

@@ -2,39 +2,33 @@
 
 use super::{LocalSdpIdentity, MID_EXT_ID, TWCC_EXT_ID};
 use crate::config::{Codec, MediaConfig, RtcConfig};
-use crate::util::Rng;
 use sdp::{
     Attribute, Direction, Extmap, Fingerprint, Fmtp, Group, MediaDescription, MediaKind, Offer,
-    Origin, RtpMap, SetupRole, Sdp, Ssrc, Timing,
+    Origin, RtcpFb, RtpMap, SetupRole, Sdp, Ssrc, Timing,
 };
 
 /// Build an `Offer` advertising audio and/or video per `cfg`, all under one
-/// BUNDLE group with rtcp-mux. SSRCs for the offerer's own outbound streams are
-/// drawn from `rng` and returned alongside the offer.
+/// BUNDLE group with rtcp-mux, announcing the offerer's outbound `ssrcs`.
 #[must_use]
 pub fn build_offer(
     cfg: &RtcConfig,
     identity: &LocalSdpIdentity,
-    rng: &mut Rng,
-) -> (Offer, OfferSsrcs) {
+    ssrcs: OfferSsrcs,
+    session_id: u64,
+) -> Offer {
     let mut media = Vec::new();
     let mut mids = Vec::new();
-    let mut ssrcs = OfferSsrcs::default();
 
-    if let Some(audio) = &cfg.audio {
-        let ssrc = rng.next_u32();
-        ssrcs.audio = Some(ssrc);
+    if let (Some(audio), Some(ssrc)) = (&cfg.audio, ssrcs.audio) {
         media.push(media_section("0", audio, identity, ssrc, SetupRole::ActPass));
         mids.push("0".to_string());
     }
-    if let Some(video) = &cfg.video {
-        let ssrc = rng.next_u32();
-        ssrcs.video = Some(ssrc);
+    if let (Some(video), Some(ssrc)) = (&cfg.video, ssrcs.video) {
         media.push(media_section("1", video, identity, ssrc, SetupRole::ActPass));
         mids.push("1".to_string());
     }
 
-    let session_id = format!("{}", rng.next_u64() >> 1);
+    let session_id = format!("{}", session_id >> 1);
     let sdp = Sdp {
         version: 0,
         origin: Origin {
@@ -62,7 +56,7 @@ pub fn build_offer(
         media,
     };
 
-    (Offer(sdp), ssrcs)
+    Offer(sdp)
 }
 
 /// SSRCs assigned to the offerer's outbound streams.
@@ -97,7 +91,7 @@ fn media_section(
     m.push_attribute(Attribute::Direction(Direction::SendRecv));
     m.push_attribute(Attribute::RtcpMux);
     m.push_attribute(Attribute::IceUfrag(identity.ice_ufrag.clone()));
-    m.push_attribute(Attribute::IcePwd(identity.ice_pwd.clone()));
+    m.push_attribute(Attribute::IcePwd(identity.ice_pwd.to_string()));
     m.push_attribute(Attribute::IceOptions("trickle".to_string()));
     m.push_attribute(Attribute::Fingerprint(Fingerprint::new(
         "sha-256",
@@ -124,6 +118,12 @@ fn media_section(
         format: mc.payload_type.to_string(),
         params: mc.fmtp.clone(),
     }));
+    for feedback in supported_feedback(mc.codec) {
+        m.push_attribute(Attribute::RtcpFb(RtcpFb {
+            format: mc.payload_type.to_string(),
+            feedback: (*feedback).to_string(),
+        }));
+    }
 
     m.push_attribute(Attribute::Ssrc(Ssrc {
         id: ssrc,
@@ -131,4 +131,11 @@ fn media_section(
         value: Some("rtc-rs".to_string()),
     }));
     m
+}
+
+pub(crate) fn supported_feedback(codec: Codec) -> &'static [&'static str] {
+    match codec {
+        Codec::Opus => &["transport-cc", "nack"],
+        Codec::H264 => &["transport-cc", "nack", "nack pli", "ccm fir"],
+    }
 }

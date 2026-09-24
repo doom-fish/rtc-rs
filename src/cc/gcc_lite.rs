@@ -35,9 +35,15 @@ impl GccLite {
         Self::new(128_000, 2_500_000, 1_200_000)
     }
 
+    pub fn capped(base: Self, max_bps: u32) -> Self {
+        if max_bps == 0 {
+            return base;
+        }
+        Self::new(base.min_bps.min(max_bps), max_bps, max_bps)
+    }
+
     /// The current target bitrate in bits per second.
     #[must_use]
-    #[allow(dead_code)]
     pub fn target_bps(&self) -> u32 {
         self.target_bps
     }
@@ -79,6 +85,19 @@ mod tests {
         let before = cc.target_bps();
         let after = cc.update(0.30);
         assert!(after < before);
+    }
+
+    #[test]
+    fn configured_bitrate_is_the_start_and_the_ceiling() {
+        let mut cc = GccLite::capped(GccLite::audio(), 24_000);
+        assert_eq!(cc.target_bps(), 24_000);
+        assert_eq!(cc.update(0.0), 24_000);
+        assert!(cc.update(0.5) < 24_000);
+        let mut low = GccLite::capped(GccLite::video(), 64_000);
+        for _ in 0..100 {
+            low.update(1.0);
+        }
+        assert_eq!(low.target_bps(), 64_000);
     }
 
     #[test]

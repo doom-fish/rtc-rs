@@ -1,41 +1,37 @@
 //! Pluggable media source traits.
 //!
-//! The orchestrator pulls raw media from caller-supplied sources. Default
-//! implementations backed by the native macOS bindings are available behind
-//! the `apple-media` feature ([`crate::media::DefaultAudioSource`] /
-//! [`crate::media::DefaultVideoSource`]); without that feature the application
-//! supplies its own.
+//! The orchestrator pulls media from caller-supplied sources: raw PCM for
+//! audio (encoded to Opus internally) and already-encoded H.264 access units
+//! for video.
 
 use crate::error::Result;
 use std::time::Duration;
 
-/// A captured video frame handed to the encode loop.
+/// An encoded video frame handed to the send loop.
 ///
-/// When backed by `avcapture`, `pixel_buffer` is a retained `CVPixelBufferRef`
-/// the encoder consumes directly. For synthetic / test sources, set
-/// `pixel_buffer` to `0` and provide the raw encoded or Annex-B `data` instead;
-/// the encode path will packetize `data` as-is.
+/// `data` is one H.264 access unit in Annex-B form; the send path packetizes
+/// it as-is.
 #[derive(Debug, Clone)]
 pub struct CapturedFrame {
-    /// A `CVPixelBufferRef` (retained), or `0` for synthetic frames.
-    pub pixel_buffer: usize,
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
     /// Presentation timestamp in 90 kHz RTP clock units.
     pub rtp_timestamp: u32,
-    /// Whether this frame is (or should be encoded as) a keyframe / IDR.
+    /// Whether this frame is a keyframe / IDR.
     pub keyframe: bool,
-    /// Pre-encoded Annex-B H.264 bytes for synthetic / passthrough sources.
-    /// Ignored when `pixel_buffer != 0` and the native encoder is active.
+    /// The Annex-B H.264 access unit.
     pub data: Vec<u8>,
 }
 
-/// A source of video frames, pulled by the outbound encode loop.
+/// A source of video frames, pulled by the outbound send loop.
 pub trait VideoSource: Send + Sync {
     /// Block up to `timeout` for the next frame. Return `None` on timeout.
     fn next_frame(&self, timeout: Duration) -> Option<CapturedFrame>;
+
+    #[allow(missing_docs)]
+    fn request_keyframe(&self) {}
 }
 
 /// A source of audio, pulled by the outbound encode loop.
