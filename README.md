@@ -7,9 +7,17 @@ clients. `rtc-rs` ties eight sibling crates — `sdp`, `ice`, `dtls`, `srtp`,
 
 It performs the full offer/answer exchange, ICE connectivity establishment, the
 DTLS-SRTP handshake, and Opus audio + H.264 video transport. Everything runs on
-one background `std::thread` driven by `std::sync::mpsc` channels: there is **no
-`async`, no executor, and no crates.io dependency** beyond `libc` (pulled in
+one background `std::thread`: there is **no `async`, no executor, and no
+crates.io dependency** beyond `zeroize` and `libc` (the latter pulled in
 transitively by the sibling crates).
+
+## Requirements
+
+- macOS 14 or later at run time. `stun-rs`, `turn-rs` and `ice-rs` link
+  `networkframework`, whose Swift bridge targets macOS 14; `dtls-rs` and
+  `srtp-rs` add `cryptokit-rs`/`security-rs` (macOS 12) and `apple-cf`
+  (macOS 13).
+- Rust 1.82 or later.
 
 ## Architecture
 
@@ -47,20 +55,26 @@ let mut pc = PeerConnection::new(
         .audio(MediaConfig::opus_default())
         .loopback_only(true)
         .build(),
-);
-pc.add_audio_track(Arc::new(SilenceAudioSource::default()));
+)?;
+pc.add_audio_track(Arc::new(SilenceAudioSource::default()))?;
 
 let offer = pc.create_offer()?;
-// ...send `offer` over your own signaling channel, receive an `answer`...
-# let answer: rtc::Answer = unimplemented!();
-pc.set_remote_description(RemoteDescription::Answer(answer))?;
+let offer_text = rtc::write_sdp(offer.sdp())?;
+// ...send `offer_text` over your own signaling channel, receive an answer...
+# let answer_text: String = unimplemented!();
+pc.set_remote_description(RemoteDescription::Answer(rtc::Answer::parse(&answer_text)?))?;
 
 // Trickle remote candidates in as they arrive, then pump events.
 while let Some(ev) = pc.recv_event_timeout(Duration::from_millis(100)) {
     match ev {
+        Event::LocalCandidate(line) => { /* send `line` to the peer */ }
         Event::Connected => println!("media is flowing"),
         Event::AudioFrame(ssrc, pcm, rate, channels) => {
             // render `pcm` (interleaved i16)
+        }
+        Event::Failed(error) => {
+            eprintln!("connection failed: {error}");
+            break;
         }
         _ => {}
     }
@@ -80,17 +94,83 @@ while let Some(ev) = pc.recv_event_timeout(Duration::from_millis(100)) {
 cargo run --example 02_loopback
 ```
 
+## Security model
+
+- **Peer identity.** The remote SDP's single SHA-256 `a=fingerprint` is pinned
+  in the DTLS configuration (the answerer when it applies the offer, the
+  offerer when it applies the answer), so a certificate that does not match
+  fails the handshake itself with `RtcError::FingerprintMismatch`. Several
+  distinct SHA-256 fingerprints are refused, and bundled media sections must
+  agree on their ICE and DTLS parameters.
+- **ICE credentials and SSRCs** come from the system CSPRNG
+  (`SecRandomCopyBytes`): the ufrag carries 132 random bits and the password
+  192.
+- **Source addresses.** Before a pair is selected only DTLS from an
+  ICE-validated remote is accepted; afterwards every DTLS, SRTP and SRTCP
+  datagram must come from the selected pair's remote address.
+- **SRTP state.** A receive context for an SSRC is only stored once one of its
+  packets authenticates. SRTP and SRTCP each keep their own per-SSRC contexts,
+  at most 32 per direction, least recently used first out. Send contexts exist
+  only for our own SSRCs.
+- **Failure.** DTLS errors, a DTLS handshake that has not finished
+  `RtcConfig::handshake_timeout` (30 s by default) after ICE selected a pair,
+  ICE failure and RFC 7675 consent expiry end the connection:
+  `Event::Failed(error)` and `ConnectionState::Failed` are reported, media
+  stops and the worker exits.
+- rtc-rs keeps its own copies of the ICE password and TURN credentials in
+  zeroizing storage and redacts them in `Debug` output. The SDP documents
+  carry the ICE password in clear, as the protocol requires.
+
+## DTLS roles
+
+The offerer offers `a=setup:actpass` and commits its certificate to the DTLS
+server role when it creates the offer, so the answer must choose
+`a=setup:active`. An answer with `a=setup:passive` is refused with
+`RtcError::Unsupported`, and one with `actpass`, `holdconn` or no `a=setup` with
+`RtcError::Negotiation`, instead of both sides waiting as servers. The answerer
+honours the offer's `a=setup` (`active` makes it the server, `passive` the
+client) and uses `RtcConfig::answer_dtls_role` (client by default) for
+`actpass`.
+
+## ICE
+
+Host candidates are always gathered; STUN servers add server-reflexive and TURN
+servers relayed candidates, both gathered on the agent's own socket without
+blocking the worker. TURN runs over UDP through `turn-rs` (`turns:` and
+`?transport=tcp` are refused at construction), and `relay_only` restricts ICE
+to relayed candidates. Remote mDNS (`.local`) candidates follow
+`RtcConfig::mdns` and are rejected by default. Candidates are trickled
+(`Event::LocalCandidate`, `Event::IceGatheringComplete`,
+`add_remote_candidate`, `add_remote_end_of_candidates`), and candidates inlined
+in the remote SDP are used too.
+
+## RTCP and congestion control
+
+The worker sends a sender or receiver report every second, NACK or PLI when the
+peer's `a=rtcp-fb` allows it, and TWCC feedback every 100 ms when
+`transport-cc` and the TWCC header extension are negotiated. From the peer it
+reads report blocks about our streams (loss and round-trip time), NACK (answered
+from a history of the last 128 audio and 512 video packets), PLI and FIR
+(forwarded to `VideoSource::request_keyframe`), REMB and TWCC. Payload types,
+MIDs and header-extension ids follow the answer.
+
+The congestion controller is loss-based AIMD only, with no delay-based
+estimation. The audio target is applied to the Opus encoder; the video target
+is reported in `Stats::target_video_bitrate` for the application's own encoder
+to apply, capped by REMB.
+
 ## Media sources
 
-The engine is source-agnostic. You implement [`AudioSource`] and
-[`VideoSource`] (or use the built-in [`SilenceAudioSource`]) and the worker
-pulls frames from them on its own cadence.
+The engine is source-agnostic. You implement [`AudioSource`] (PCM) and
+[`VideoSource`] (encoded H.264 access units), or use the built-in
+[`SilenceAudioSource`], and the worker pulls frames from them on its own
+cadence. Received video is delivered as Annex-B access units for the caller to
+decode.
 
-The optional `apple-media` feature is reserved for wiring the sibling Apple-SDK
-bindings (`avcapture`, `audiounit`, `videotoolbox`, …) as turn-key
-capture/render sources. It is **off by default** so the core stack — and the
-`loopback_full_stack` integration test — builds and runs on any host without
-camera, microphone, or hardware-codec access. See
+The optional `apple-media` feature only compiles the sibling Apple-SDK
+bindings (`avcapture`, `audiounit`, `audiotoolbox`, `videotoolbox`,
+`apple-metal`, `coreanimation`); no capture, encode, decode or render sources
+are implemented yet. It is **off by default**. See
 [`COVERAGE.md`](COVERAGE.md) for the current state.
 
 ## Testing
@@ -102,19 +182,22 @@ cargo test
 The gating integration test is `tests/loopback_full_stack.rs`: two in-process
 `PeerConnection`s complete the entire SDP + ICE + DTLS + SRTP negotiation and
 exchange Opus audio and H.264 video, asserting both directions receive both
-media types.
+media types. Other suites drive rtc-rs as the DTLS server against a scripted
+peer built from the sibling crates, fingerprint mismatches on both sides, a
+stalled handshake, consent expiry with an injected clock, and a relay-only
+call through an in-process TURN server. Every socket binds `127.0.0.1`.
 
 ## Scope and non-goals
 
 - **Synchronous only.** No `async`/`await`, no runtime. One worker thread per
   connection.
-- **Trickle ICE.** Host candidates always; STUN server-reflexive when
-  configured. TURN relay is declared in config but not yet wired (see
-  [`COVERAGE.md`](COVERAGE.md)).
+- **One negotiation.** No renegotiation, ICE restart or data channels (an
+  active `m=application` section is refused).
 - **GCM SRTP profiles** (`AEAD_AES_128_GCM` / `AEAD_AES_256_GCM`), negotiated
-  through DTLS-SRTP.
-- **Opus audio, H.264 video.** Video access units are always delivered as
-  Annex-B so callers can decode them without the `apple-media` feature.
+  through DTLS-SRTP; the connection fails instead of rekeying when a key's
+  lifetime is used up.
+- **Opus audio, H.264 video** (packetization-mode 1). Video access units are
+  delivered as Annex-B for the caller to decode.
 
 ## License
 
