@@ -4,6 +4,12 @@ All notable changes to this crate are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-26
+
+### Fixed
+
+- Use `coreanimation-rs` 0.7 for the `apple-media` feature.
+
 ## [0.2.0] - Unreleased
 
 ### Security
